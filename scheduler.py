@@ -7,6 +7,9 @@ import requests
 from colorama import Fore, Style, init
 import ntplib
 from datetime import datetime, timezone, timedelta
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # Initialize colorama
 init(autoreset=True)
@@ -55,34 +58,22 @@ def clear_screen():
 
 def get_target_time():
     """Get target time from user or environment variable."""
-    # Check if time is in environment variable
-    env_time = os.environ.get('TARGET_TIME')
+    # Get default time from environment variable
+    default_time = os.environ.get('TARGET_TIME', '08:00:00')
     
-    if env_time:
-        try:
-            # Expected format: HH:MM:SS (24-hour)
-            time_parts = env_time.split(':')
-            hour = int(time_parts[0])
-            minute = int(time_parts[1])
-            second = int(time_parts[2]) if len(time_parts) > 2 else 0
-            
-            # Get current time from internet
-            now = get_internet_time()
-            target = now.replace(hour=hour, minute=minute, second=second, microsecond=0)
-            
-            # If target time is in the past, use tomorrow
-            if target < now:
-                target += timedelta(days=1)
-                print(f"{Fore.YELLOW}Target time is in the past, scheduling for tomorrow.")
-            
-            return target
-        except (ValueError, IndexError):
-            print(f"{Fore.RED}Invalid time format in TARGET_TIME. Using manual input.")
+    print(f"{Fore.CYAN}Default target time from config: {Fore.GREEN}{default_time}")
     
-    # Manual input
+    # Prompt user for time (empty input will use the default)
     while True:
         try:
-            time_str = input(f"{Fore.CYAN}Enter target time (HH:MM:SS in 24-hour format): ")
+            time_str = input(f"{Fore.CYAN}Enter target time (HH:MM:SS) or press Enter to use default: ")
+            
+            # If user didn't enter anything, use the default
+            if not time_str:
+                time_str = default_time
+                print(f"{Fore.YELLOW}Using default time: {Fore.GREEN}{default_time}")
+            
+            # Parse the time
             time_parts = time_str.split(':')
             
             hour = int(time_parts[0])
