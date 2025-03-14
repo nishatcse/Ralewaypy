@@ -271,11 +271,36 @@ def get_ticket_ids_from_layout(seat_layout, desired_seats, max_selectable_seat):
 
     # Case 2: When desired_seats is empty, apply the new seat selection algorithm
     selected_seats = []
-
-    if right < len(seats) and len(selected_seats) < max_selectable_seat:
-        coach_selected_seats.append(seats[right])
-        selected_seats.append(seats[right])
-        right += 1
+    
+    # Initialize variables needed for the algorithm
+    all_available_seats = []
+    coach_selected_seats = []  # Initialize this outside the conditional blocks
+    seats = []  # Initialize seats to avoid undefined variable errors
+    
+    # Gather all available seats across coaches
+    for coach in seat_layout:
+        coach_data = {
+            "coach": coach.get("coach_name", "Unknown"),
+            "seats": []
+        }
+        
+        for row in coach["layout"]:
+            for seat in row:
+                if seat["seat_availability"] == 1:
+                    coach_data["seats"].append(seat)
+        
+        if coach_data["seats"]:
+            all_available_seats.append(coach_data)
+    
+    # Select seats from the first coach with available seats
+    if all_available_seats:
+        seats = all_available_seats[0]["seats"]
+        right = 0  # Initialize right index
+        
+        if right < len(seats) and len(selected_seats) < max_selectable_seat:
+            coach_selected_seats.append(seats[right])
+            selected_seats.append(seats[right])
+            right += 1
 
     if coach_selected_seats:
         for seat in coach_selected_seats:
@@ -550,7 +575,7 @@ def verify_and_confirm_booking(otp):
     confirm_payload = prepare_confirm_payload(otp)
 
     # Payment method selection prompt
-    print("\n{Fore.CYAN}Select Payment Method:")
+    print(f"{Fore.CYAN}Select Payment Method:")
     print(f"1. Bkash\n2. Nagad\n3. Rocket\n4. Upay\n5. VISA\n6. Mastercard\n7. DBBL Nexus")
 
     while True:
@@ -608,8 +633,8 @@ def verify_and_confirm_booking(otp):
             if response.status_code == 200:
                 data = response.json()
 
-                if "redirecturl" in data["data"]:
-                    redirect_url = data["data"]["redirecturl"]
+                if "redirectUrl" in data["data"]:
+                    redirect_url = data["data"]["redirectUrl"]
                     print(f"\n{Fore.GREEN}{'='*50}")
                     print(f"{Fore.GREEN}Booking confirmed successfully!")
                     print(f"{Fore.YELLOW}IMPORTANT: Please note that this payment link can be used ONLY ONCE.")
