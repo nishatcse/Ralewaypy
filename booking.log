@@ -1,0 +1,75 @@
+[36mStarting ticket booking process...
+[32mAuthentication successful!
+[35mAuth Token: eyJhbGciOiJSUzI1NiIsInR5cCI6ImF0K2p3dCJ9.eyJuYmYiOjE3NDIwNjIwMTUsImV4cCI6MTc0MjE0ODQxNSwiaXNzIjoiaHR0cDovL3RyYWluLWlhbS5zaG9ob3ouY29tIiwiYXVkIjoic2hvaG96LmlhbS50cmFpbiIsImNsaWVudF9pZCI6InRyYWluLXRpY2tldC11c2VyIiwiY2xpZW50X3RlbmFudF9pZCI6IjY3YTUxNjNjLTU2NWQtNGNhMC1iMTE3LTg3YzcwMWY2NTRmOSIsImNsaWVudF92ZXJ0aWNhbF9pZCI6IjA2OGU4MDRmLTJkYjctNDQ4OS05OTYzLTc4OWZiN2UwMmJkZiIsInN1YiI6IjNjOTExMmQ4LTU3YjQtNDUxYS05OGIzLTAzOWRiYWZiNDA2MCIsImF1dGhfdGltZSI6MTc0MjA2MjAxNSwiaWRwIjoibG9jYWwiLCJwaG9uZV9udW1iZXIiOiIwMTc2NzA4ODI4OCIsImVtYWlsIjoiYS5hLm1hbXVuNTk1QGdtYWlsLmNvbSIsInVzZXJuYW1lIjoiMDE3NjcwODgyODgiLCJkaXNwbGF5X25hbWUiOiJNZCBBYmR1bGxhaCBBbCBNYW11biIsImxvY2FsZSI6ImJuLUJEIiwibmlkbiI6IjU1MzQ5MzY3NjkiLCJuaWRudCI6Ik5JRCIsInJvbGUiOlsidXNlciIsImFub255bW91cyJdLCJzY29wZSI6WyJzaG9ob3ouaWFtLnRyYWluIiwib2ZmbGluZV9hY2Nlc3MiXSwiYW1yIjpbInB3ZCJdfQ.l7r5FMBcbv868sg3G5TovXgX29EF57rbsswVME4d1U8g83ZiVMTJVsChAuXlPZKCE3iGkymycR2HAe-eWxaZVe-u6HmA8S1-mAoVBWp00EqMOrcovYmqjs5whVwrqoekbfmYGkJ1pF76a9NotYrKzbMygwOgbXdvPTZtA_3f91Vr_bOUY1JFCJoof4xV1dpRkk2INGG5UrlBqgZ9JC15Oyv54pIIGeB6a0clgUEwQjWC0f3yo8iA943RY75lMuPhXZ6GdnC93a-a5OfA_34zmAp9i28u7qQHhK0NyHqsUrd8DYS9AwjrfE6byROajgfJduX89j-Zd__W6G4XZXWsMw
+[33mFetching trip details for Dhaka to Dinajpur on 20-Mar-2025...
+[33mTrain number 791 with seat class AC_B not available yet. Retrying in 1 second...
+[33mTrain number 791 with seat class AC_B not available yet. Retrying in 1 second...
+[33mTrain number 791 with seat class AC_B not available yet. Retrying in 1 second...
+[33mTrain number 791 with seat class AC_B not available yet. Retrying in 1 second...
+[33mTrain number 791 with seat class AC_B not available yet. Retrying in 1 second...
+[33mTrain number 791 with seat class AC_B not available yet. Retrying in 1 second...
+[33mTrain number 791 with seat class AC_B not available yet. Retrying in 1 second...
+[33mTrain number 791 with seat class AC_B not available yet. Retrying in 1 second...
+[36mStarting ticket booking process...
+[32mAuthentication successful!
+[35mAuth Token: eyJhbGciOiJSUzI1NiIsInR5cCI6ImF0K2p3dCJ9.eyJuYmYiOjE3NDIwNjIyNTEsImV4cCI6MTc0MjE0ODY1MSwiaXNzIjoiaHR0cDovL3RyYWluLWlhbS5zaG9ob3ouY29tIiwiYXVkIjoic2hvaG96LmlhbS50cmFpbiIsImNsaWVudF9pZCI6InRyYWluLXRpY2tldC11c2VyIiwiY2xpZW50X3RlbmFudF9pZCI6IjY3YTUxNjNjLTU2NWQtNGNhMC1iMTE3LTg3YzcwMWY2NTRmOSIsImNsaWVudF92ZXJ0aWNhbF9pZCI6IjA2OGU4MDRmLTJkYjctNDQ4OS05OTYzLTc4OWZiN2UwMmJkZiIsInN1YiI6IjNjOTExMmQ4LTU3YjQtNDUxYS05OGIzLTAzOWRiYWZiNDA2MCIsImF1dGhfdGltZSI6MTc0MjA2MjI1MSwiaWRwIjoibG9jYWwiLCJwaG9uZV9udW1iZXIiOiIwMTc2NzA4ODI4OCIsImVtYWlsIjoiYS5hLm1hbXVuNTk1QGdtYWlsLmNvbSIsInVzZXJuYW1lIjoiMDE3NjcwODgyODgiLCJkaXNwbGF5X25hbWUiOiJNZCBBYmR1bGxhaCBBbCBNYW11biIsImxvY2FsZSI6ImJuLUJEIiwibmlkbiI6IjU1MzQ5MzY3NjkiLCJuaWRudCI6Ik5JRCIsInJvbGUiOlsidXNlciIsImFub255bW91cyJdLCJzY29wZSI6WyJzaG9ob3ouaWFtLnRyYWluIiwib2ZmbGluZV9hY2Nlc3MiXSwiYW1yIjpbInB3ZCJdfQ.PTEv83O-AmrFPMTznR0Y_URtp9LzQSuHbUWBuSbnhr2kvw3P5hC8cIX4PjVAYmc76zRarc-XX4dVH-YEdlqsy-LZBNb29u2jtGMd-UxDYOp_oSXRLZ4hRbm3lq3DuFlwBad6hbpviMVsYu9g7jmN2-MLcIwoE-hXvTU_dxPf4e6d2P9U2y9z3oLNInSJwXvthMOMbZoi-T__r7_2qXvtc79vQg0HNQEtlb0QcUbMi9ltnImdP9zlLyJsAPvF7JWJyxlm4RSFSmuMbj90TXCW1BfQf5vEv2gd9oSt9zecSpZ_o9X87mH7xl0Bb2Dg99XiAB3GjxrXeF5oKUifYfurWA
+[33mFetching trip details for Dhaka to Dinajpur on 20-Mar-2025...
+[33mTrain number 791 with seat class AC_B not available yet. Retrying in 1 second...
+[33mTrain number 791 with seat class AC_B not available yet. Retrying in 1 second...
+[33mTrain number 791 with seat class AC_B not available yet. Retrying in 1 second...
+[33mTrain number 791 with seat class AC_B not available yet. Retrying in 1 second...
+[33mTrain number 791 with seat class AC_B not available yet. Retrying in 1 second...
+[33mTrain number 791 with seat class AC_B not available yet. Retrying in 1 second...
+[33mTrain number 791 with seat class AC_B not available yet. Retrying in 1 second...
+[33mTrain number 791 with seat class AC_B not available yet. Retrying in 1 second...
+[33mTrain number 791 with seat class AC_B not available yet. Retrying in 1 second...
+[33mTrain number 791 with seat class AC_B not available yet. Retrying in 1 second...
+➤ [36mStarting ticket booking process...[0m
+✔ [32mAuthentication successful![0m
+➤ [35mAuth Token: eyJhbGciOiJSUzI1NiIsInR5cCI6ImF0K2p3dCJ9.eyJuYmYiOjE3NDIwNjI0MjgsImV4cCI6MTc0MjE0ODgyOCwiaXNzIjoiaHR0cDovL3RyYWluLWlhbS5zaG9ob3ouY29tIiwiYXVkIjoic2hvaG96LmlhbS50cmFpbiIsImNsaWVudF9pZCI6InRyYWluLXRpY2tldC11c2VyIiwiY2xpZW50X3RlbmFudF9pZCI6IjY3YTUxNjNjLTU2NWQtNGNhMC1iMTE3LTg3YzcwMWY2NTRmOSIsImNsaWVudF92ZXJ0aWNhbF9pZCI6IjA2OGU4MDRmLTJkYjctNDQ4OS05OTYzLTc4OWZiN2UwMmJkZiIsInN1YiI6IjNjOTExMmQ4LTU3YjQtNDUxYS05OGIzLTAzOWRiYWZiNDA2MCIsImF1dGhfdGltZSI6MTc0MjA2MjQyOCwiaWRwIjoibG9jYWwiLCJwaG9uZV9udW1iZXIiOiIwMTc2NzA4ODI4OCIsImVtYWlsIjoiYS5hLm1hbXVuNTk1QGdtYWlsLmNvbSIsInVzZXJuYW1lIjoiMDE3NjcwODgyODgiLCJkaXNwbGF5X25hbWUiOiJNZCBBYmR1bGxhaCBBbCBNYW11biIsImxvY2FsZSI6ImJuLUJEIiwibmlkbiI6IjU1MzQ5MzY3NjkiLCJuaWRudCI6Ik5JRCIsInJvbGUiOlsidXNlciIsImFub255bW91cyJdLCJzY29wZSI6WyJzaG9ob3ouaWFtLnRyYWluIiwib2ZmbGluZV9hY2Nlc3MiXSwiYW1yIjpbInB3ZCJdfQ.Y29FC5LeRuqMeAxZmFSbnDJlEMF-hZPRh217fZNLwCmIl6ZXVyCSr6bCam3BxA63riXbtk29MqbJX6Vm9AHToKdcOQV2Ga8AbLiAJelqjdNd57Tc4ms6rbt6jwoDA-JQ3RsxtWu1rFm_F8g7wjAWSn7pQ8bvm7xvLdJ0IuV9HzcHRwjbLRcXHDsbVoUf1mbyCjTumozx4i-MSky81oxoPH1bqahrptTwkSoVAWiRMisXv_Gps99qjt2fzOxiwFYNviNDcoENgTlX21mciN98VIV3O8AOi_KGRVBXr6dN0fEOfsh5MkGfmHFoIvtdivbXY_V93fV7jFNNEQwbzYkSQw[0m
+➤ [33mFetching trip details for Dhaka to Dinajpur on 20-Mar-2025...[0m
+⌛ [33mTrain number 791 with seat class AC_B not available yet. Retrying in 1 second...[0m
+⌛ [33mTrain number 791 with seat class AC_B not available yet. Retrying in 1 second...[0m
+⌛ [33mTrain number 791 with seat class AC_B not available yet. Retrying in 1 second...[0m
+⌛ [33mTrain number 791 with seat class AC_B not available yet. Retrying in 1 second...[0m
+⌛ [33mTrain number 791 with seat class AC_B not available yet. Retrying in 1 second...[0m
+⌛ [33mTrain number 791 with seat class AC_B not available yet. Retrying in 1 second...[0m
+⌛ [33mTrain number 791 with seat class AC_B not available yet. Retrying in 1 second...[0m
+⌛ [33mTrain number 791 with seat class AC_B not available yet. Retrying in 1 second...[0m
+⌛ [33mTrain number 791 with seat class AC_B not available yet. Retrying in 1 second...[0m
+⌛ [33mTrain number 791 with seat class AC_B not available yet. Retrying in 1 second...[0m
+⌛ [33mTrain number 791 with seat class AC_B not available yet. Retrying in 1 second...[0m
+⌛ [33mTrain number 791 with seat class AC_B not available yet. Retrying in 1 second...[0m
+⌛ [33mTrain number 791 with seat class AC_B not available yet. Retrying in 1 second...[0m
+⌛ [33mTrain number 791 with seat class AC_B not available yet. Retrying in 1 second...[0m
+✔ [32mConfiguration successfully updated![0m
+➤ [36mStarting ticket booking process...[0m
+✔ [32mAuthentication successful![0m
+➤ [35mAuth Token: eyJhbGciOiJSUzI1NiIsInR5cCI6ImF0K2p3dCJ9.eyJuYmYiOjE3NDIwNjI4MDYsImV4cCI6MTc0MjE0OTIwNiwiaXNzIjoiaHR0cDovL3RyYWluLWlhbS5zaG9ob3ouY29tIiwiYXVkIjoic2hvaG96LmlhbS50cmFpbiIsImNsaWVudF9pZCI6InRyYWluLXRpY2tldC11c2VyIiwiY2xpZW50X3RlbmFudF9pZCI6IjY3YTUxNjNjLTU2NWQtNGNhMC1iMTE3LTg3YzcwMWY2NTRmOSIsImNsaWVudF92ZXJ0aWNhbF9pZCI6IjA2OGU4MDRmLTJkYjctNDQ4OS05OTYzLTc4OWZiN2UwMmJkZiIsInN1YiI6IjNjOTExMmQ4LTU3YjQtNDUxYS05OGIzLTAzOWRiYWZiNDA2MCIsImF1dGhfdGltZSI6MTc0MjA2MjgwNiwiaWRwIjoibG9jYWwiLCJwaG9uZV9udW1iZXIiOiIwMTc2NzA4ODI4OCIsImVtYWlsIjoiYS5hLm1hbXVuNTk1QGdtYWlsLmNvbSIsInVzZXJuYW1lIjoiMDE3NjcwODgyODgiLCJkaXNwbGF5X25hbWUiOiJNZCBBYmR1bGxhaCBBbCBNYW11biIsImxvY2FsZSI6ImJuLUJEIiwibmlkbiI6IjU1MzQ5MzY3NjkiLCJuaWRudCI6Ik5JRCIsInJvbGUiOlsidXNlciIsImFub255bW91cyJdLCJzY29wZSI6WyJzaG9ob3ouaWFtLnRyYWluIiwib2ZmbGluZV9hY2Nlc3MiXSwiYW1yIjpbInB3ZCJdfQ.mjjYe1Mrh4E14iMZvXXWpz3jNL8xH-IQZ0D_k1cMbpcCRSPPny253wPnak0tqTQ2MhOc3zifsAt88MLbQMAqvz3v_wM4DIBWjP6vGEogwZTFnbAFpxcQ_ivX-Jl_drJCAc1EAp2_tpUd7rKkO2-eDf6_7rUp5F485uybkwSb7ZIvYMyMpWqh2MRlHzPdIiSO3iKdN4We9Jp6JXYh6ZEbwY0oDFH0PohiXzdto3HlleDFCqv-YGpyexCuQKRVmdEZaNVV488Eqt8YhCm6Iyo5Ar8MJ2U0TGqUsy6nt9_828-J-JJ4esy4-BoxyVE1mLy5HkNHSw9DU5r2CMOm30fWLw[0m
+➤ [33mFetching trip details for Dhaka to Dinajpur on 20-Mar-2025...[0m
+⌛ [33mTrain number 791 with seat class AC_B not available yet. Retrying in 1 second...[0m
+⌛ [33mTrain number 791 with seat class AC_B not available yet. Retrying in 1 second...[0m
+⌛ [33mTrain number 791 with seat class AC_B not available yet. Retrying in 1 second...[0m
+⌛ [33mTrain number 791 with seat class AC_B not available yet. Retrying in 1 second...[0m
+⌛ [33mTrain number 791 with seat class AC_B not available yet. Retrying in 1 second...[0m
+➤ [36mStarting ticket booking process...[0m
+✔ [32mAuthentication successful![0m
+➤ [35mAuth Token: eyJhbGciOiJSUzI1NiIsInR5cCI6ImF0K2p3dCJ9.eyJuYmYiOjE3NDIwNjMxMjIsImV4cCI6MTc0MjE0OTUyMiwiaXNzIjoiaHR0cDovL3RyYWluLWlhbS5zaG9ob3ouY29tIiwiYXVkIjoic2hvaG96LmlhbS50cmFpbiIsImNsaWVudF9pZCI6InRyYWluLXRpY2tldC11c2VyIiwiY2xpZW50X3RlbmFudF9pZCI6IjY3YTUxNjNjLTU2NWQtNGNhMC1iMTE3LTg3YzcwMWY2NTRmOSIsImNsaWVudF92ZXJ0aWNhbF9pZCI6IjA2OGU4MDRmLTJkYjctNDQ4OS05OTYzLTc4OWZiN2UwMmJkZiIsInN1YiI6IjNjOTExMmQ4LTU3YjQtNDUxYS05OGIzLTAzOWRiYWZiNDA2MCIsImF1dGhfdGltZSI6MTc0MjA2MzEyMiwiaWRwIjoibG9jYWwiLCJwaG9uZV9udW1iZXIiOiIwMTc2NzA4ODI4OCIsImVtYWlsIjoiYS5hLm1hbXVuNTk1QGdtYWlsLmNvbSIsInVzZXJuYW1lIjoiMDE3NjcwODgyODgiLCJkaXNwbGF5X25hbWUiOiJNZCBBYmR1bGxhaCBBbCBNYW11biIsImxvY2FsZSI6ImJuLUJEIiwibmlkbiI6IjU1MzQ5MzY3NjkiLCJuaWRudCI6Ik5JRCIsInJvbGUiOlsidXNlciIsImFub255bW91cyJdLCJzY29wZSI6WyJzaG9ob3ouaWFtLnRyYWluIiwib2ZmbGluZV9hY2Nlc3MiXSwiYW1yIjpbInB3ZCJdfQ.IChEulJNMcqRlcRz3c3KvLgxjkwWfezAN4vgPp9jno2u2O53cTNwn6Lv_rr86Hi3lPM5t2zcxXPuYwo5wG2-XNM2Yd6-RCecVTCAj1BBVIzX9b53-3KCxWh28vA_Dt_pxBq3t09vYTNT-Q-GlvsTAYTadb1KPPvgbhWnqm0zuADju_cqtPHDZc1XZlDF4MXSwyvPvn5szHPz0ieSstj-YXt6mXgvHATLVHeEbBOIg9hWvC2x3NI3F5ChOpe2XNKGlyEWHZ6o_6bAlyxMQu92sk3bwYS7PLq9Jminy2a5kk7vSYRIOU54BsftigTwSQU-5SkkQ1jsf6H69tVGE_JjPQ[0m
+➤ [33mFetching trip details for Dhaka to Dinajpur on 20-Mar-2025...[0m
+⌛ [33mTrain number 791 with seat class AC_B not available yet. Retrying in 1 second...[0m
+⌛ [33mTrain number 791 with seat class AC_B not available yet. Retrying in 1 second...[0m
+⌛ [33mTrain number 791 with seat class AC_B not available yet. Retrying in 1 second...[0m
+⌛ [33mTrain number 791 with seat class AC_B not available yet. Retrying in 1 second...[0m
+➤ [36mStarting ticket booking process...[0m
+✔ [32mAuthentication successful![0m
+➤ [35mAuth Token: eyJhbGciOiJSUzI1NiIsInR5cCI6ImF0K2p3dCJ9.eyJuYmYiOjE3NDIwNjM0NjMsImV4cCI6MTc0MjE0OTg2MywiaXNzIjoiaHR0cDovL3RyYWluLWlhbS5zaG9ob3ouY29tIiwiYXVkIjoic2hvaG96LmlhbS50cmFpbiIsImNsaWVudF9pZCI6InRyYWluLXRpY2tldC11c2VyIiwiY2xpZW50X3RlbmFudF9pZCI6IjY3YTUxNjNjLTU2NWQtNGNhMC1iMTE3LTg3YzcwMWY2NTRmOSIsImNsaWVudF92ZXJ0aWNhbF9pZCI6IjA2OGU4MDRmLTJkYjctNDQ4OS05OTYzLTc4OWZiN2UwMmJkZiIsInN1YiI6IjNjOTExMmQ4LTU3YjQtNDUxYS05OGIzLTAzOWRiYWZiNDA2MCIsImF1dGhfdGltZSI6MTc0MjA2MzQ2MywiaWRwIjoibG9jYWwiLCJwaG9uZV9udW1iZXIiOiIwMTc2NzA4ODI4OCIsImVtYWlsIjoiYS5hLm1hbXVuNTk1QGdtYWlsLmNvbSIsInVzZXJuYW1lIjoiMDE3NjcwODgyODgiLCJkaXNwbGF5X25hbWUiOiJNZCBBYmR1bGxhaCBBbCBNYW11biIsImxvY2FsZSI6ImJuLUJEIiwibmlkbiI6IjU1MzQ5MzY3NjkiLCJuaWRudCI6Ik5JRCIsInJvbGUiOlsidXNlciIsImFub255bW91cyJdLCJzY29wZSI6WyJzaG9ob3ouaWFtLnRyYWluIiwib2ZmbGluZV9hY2Nlc3MiXSwiYW1yIjpbInB3ZCJdfQ.kjDlPXOtaA7ZZ4jRX0KqhoZHANd0A_K8p0uYMSzZOf_Naa30ORz7feuzrT6ZMxI0Vng43dhZvX_uA0xDlBtktEVCKoZXNKN7_xMbxH4dAR-74zE7bL3G8mXhxgnoEyW-XkE9cw0tnUSNbqQ9lkI2vhtx7wRu5ML_MiGVvs7IKF29y62Vl1oAp7Tf2C_OVzH8v0G1DHvkGKL5fJcSCO77jtBfjI7AZZaPxvcqzMoJkIiqrNaIGVEaMevy33qFqVO3uGoDK94jJcT0EUVYdpJc6pUfgz_SUrNMUU_mgHq0hWx7dzGvxT-Mq_a4mIoAlwDIg5qLophOdKxp7mH_NGE8aA[0m
+➤ [33mFetching trip details for Dhaka to Dinajpur on 20-Mar-2025...[0m
+⌛ [33mTrain number 791 with seat class AC_B not available yet. Retrying in 1 second...[0m
+⌛ [33mTrain number 791 with seat class AC_B not available yet. Retrying in 1 second...[0m
+⌛ [33mTrain number 791 with seat class AC_B not available yet. Retrying in 1 second...[0m
+⌛ [33mTrain number 791 with seat class AC_B not available yet. Retrying in 1 second...[0m
+⌛ [33mTrain number 791 with seat class AC_B not available yet. Retrying in 1 second...[0m
+⌛ [33mTrain number 791 with seat class AC_B not available yet. Retrying in 1 second...[0m
+⌛ [33mTrain number 791 with seat class AC_B not available yet. Retrying in 1 second...[0m
+⌛ [33mTrain number 791 with seat class AC_B not available yet. Retrying in 1 second...[0m
+⌛ [33mTrain number 791 with seat class AC_B not available yet. Retrying in 1 second...[0m
