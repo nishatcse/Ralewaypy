@@ -391,97 +391,90 @@ def reserve_seat():
 
     print(f"{Fore.YELLOW}Waiting for seat layout availability...")
 
-    # Check for seat layout availability
-    seat_layout = asyncio.run(is_booking_available())
+    while True:  # Keep retrying until at least one seat is reserved
+        # Check for seat layout availability
+        seat_layout = asyncio.run(is_booking_available())
 
-    if not seat_layout:
-        print(f"{Fore.RED}Seat layout could not be retrieved. Exiting.")
-        return False
+        if not seat_layout:
+            print(f"{Fore.RED}Seat layout could not be retrieved. Retrying...")
+            time.sleep(1)  # Retry after 1 second
+            continue
 
-    ticket_id_map = get_ticket_ids_from_layout(seat_layout, desired_seats, max_selectable_seat)
+        ticket_id_map = get_ticket_ids_from_layout(seat_layout, desired_seats, max_selectable_seat)
 
-    if not ticket_id_map:
-        print(f"{Fore.RED}No matching seats found based on desired preferences. Exiting.")
-        return False
+        if not ticket_id_map:
+            print(f"{Fore.RED}No matching seats found based on desired preferences. Retrying...")
+            time.sleep(1)  # Retry after 1 second
+            continue
 
-    # Prepare ticket_ids list and seat mapping for display
-    ticket_ids = list(ticket_id_map.keys())
-    print(f"{Fore.GREEN}Seats matched! Details: {', '.join([f'{ticket_id_map[ticket]} (Ticket ID: {ticket})' for ticket in ticket_ids])}")
+        # Prepare ticket_ids list and seat mapping for display
+        ticket_ids = list(ticket_id_map.keys())
+        print(f"{Fore.GREEN}Seats matched! Details: {', '.join([f'{ticket_id_map[ticket]} (Ticket ID: {ticket})' for ticket in ticket_ids])}")
 
-    successful_ticket_ids = []
-    stop_reservation_due_to_limit = False
-    
-    def reserve_single_seat(ticket):
-        nonlocal stop_reservation_due_to_limit
+        successful_ticket_ids = []
 
-        if stop_reservation_due_to_limit:
-            return False  # Stop further reservation attempts if limit error occurred
+        def reserve_single_seat(ticket):
+            url = f"https://railspaapi.shohoz.com/v1.0/app/bookings/reserve-seat"
+            params = {
+                "ticket_id": ticket,
+                "route_id": trip_route_id
+            }
 
-        url = f"https://railspaapi.shohoz.com/v1.0/app/bookings/reserve-seat"
-        params = {
-            "ticket_id": ticket,
-            "route_id": trip_route_id
-        }
-        
-        print(f"{Fore.CYAN}Attempting to reserve Seat {ticket_id_map[ticket]} (Ticket ID: {ticket})...")
+            print(f"{Fore.CYAN}Attempting to reserve Seat {ticket_id_map[ticket]} (Ticket ID: {ticket})...")
 
-        while True:
-            try:
-                response = requests.patch(url, headers=headers, json=params)
-                print(f"{Fore.CYAN}Response from Reserve Seat API for Seat {ticket_id_map[ticket]} (Ticket ID: {ticket}): {response.text}")
+            while True:
+                try:
+                    response = requests.patch(url, headers=headers, json=params)
+                    print(f"{Fore.CYAN}Response from Reserve Seat API for Seat {ticket_id_map[ticket]} (Ticket ID: {ticket}): {response.text}")
 
-                if response.status_code == 200:
-                    data = response.json()
+                    if response.status_code == 200:
+                        data = response.json()
 
-                    if data["data"].get("ack") == 1:  # Success is indicated by "ack": 1
-                        print(f"{Fore.GREEN}Seat {ticket_id_map[ticket]} (Ticket ID: {ticket}) reserved successfully!")
-                        successful_ticket_ids.append(ticket)
-                        return True
+                        if data["data"].get("ack") == 1:  # Success is indicated by "ack": 1
+                            print(f"{Fore.GREEN}Seat {ticket_id_map[ticket]} (Ticket ID: {ticket}) reserved successfully!")
+                            return True
+                        else:
+                            print(f"{Fore.RED}Failed to reserve seat {ticket_id_map[ticket]} (Ticket ID: {ticket}): {data}")
+                            return False
+
+                    elif response.status_code == 422:
+                        error_data = response.json()
+                        error_msg = error_data.get("error", {}).get("messages", {}).get("error_msg", "")
+
+                        if "Sorry! this ticket is not available now." in error_msg:
+                            print(f"{Fore.RED}Seat {ticket_id_map[ticket]} (Ticket ID: {ticket}) is not available now. Skipping retry.")
+                            return False
+
+                    elif response.status_code in [500, 502, 503, 504]:
+                        print(f"{Fore.YELLOW}Server overloaded (HTTP {response.status_code}). Retrying in 100 milliseconds...")
+                        time.sleep(0.1)  # Retry after 100 milliseconds
+
                     else:
-                        print(f"{Fore.RED}Failed to reserve seat {ticket_id_map[ticket]} (Ticket ID: {ticket}): {data}")
+                        print(f"{Fore.RED}Error: {response.status_code} - {response.text}")
                         return False
 
-                elif response.status_code == 422:
-                    error_data = response.json()
-                    error_msg = error_data.get("error", {}).get("messages", {}).get("error_msg", "")
+                except Exception as e:
+                    print(f"{Fore.RED}Exception occurred while reserving seat {ticket_id_map[ticket]} (Ticket ID: {ticket}): {e}")
+                    time.sleep(0.1)  # Retry after 100 milliseconds in case of an exception
 
-                    if "Maximum 4 seats can be booked at a time" in error_msg:
-                        print(f"{Fore.RED}Error: {error_msg}. Stopping further seat reservation.")
-                        stop_reservation_due_to_limit = True
-                        return False  # Stop attempting further reservations
+        # Reserve seats sequentially
+        for ticket in ticket_ids:
+            if len(successful_ticket_ids) >= max_selectable_seat:
+                break  # Stop if the limit is reached
 
-                    elif "Sorry! this ticket is not available now." in error_msg:
-                        print(f"{Fore.RED}Seat {ticket_id_map[ticket]} (Ticket ID: {ticket}) is not available now. Skipping retry.")
-                        return False
+            if reserve_single_seat(ticket):
+                successful_ticket_ids.append(ticket)
+            else:
+                print(f"{Fore.RED}Skipping seat {ticket_id_map[ticket]} due to unavailability.")
 
-                elif response.status_code in [500, 502, 503, 504]:
-                    print(f"{Fore.YELLOW}Server overloaded (HTTP {response.status_code}). Retrying in 100 milliseconds...")
-                    time.sleep(0.1)  # Retry after 100 milliseconds
-
-                else:
-                    print(f"{Fore.RED}Error: {response.status_code} - {response.text}")
-                    return False
-
-            except Exception as e:
-                print(f"{Fore.RED}Exception occurred while reserving seat {ticket_id_map[ticket]} (Ticket ID: {ticket}): {e}")
-                time.sleep(0.1)  # Retry after 100 milliseconds in case of an exception
-    
-    # Reserve seats sequentially
-    for ticket in ticket_ids:
-        if reserve_single_seat(ticket):
-            print(f"{Fore.GREEN}Successfully reserved seat {ticket_id_map[ticket]}")
+        if successful_ticket_ids:
+            global reserved_ticket_ids
+            reserved_ticket_ids = successful_ticket_ids
+            print(f"{Fore.GREEN}Successfully reserved {len(successful_ticket_ids)} seats: {', '.join([ticket_id_map[ticket] for ticket in successful_ticket_ids])}")
+            return True
         else:
-            print(f"{Fore.RED}Failed to reserve seat {ticket_id_map[ticket]}")
-    
-    if successful_ticket_ids:
-        global reserved_ticket_ids
-        reserved_ticket_ids = successful_ticket_ids
-        print(f"{Fore.GREEN}Successfully reserved {len(successful_ticket_ids)} seats: {', '.join([ticket_id_map[ticket] for ticket in successful_ticket_ids])}")
-        return True
-    else:
-        print(f"{Fore.RED}No seats could be reserved. Please try again.")
-        return False
-
+            print(f"{Fore.RED}No seats could be reserved. Retrying...")
+            time.sleep(1)  # Retry after 1 second
 
 # Step 2: Send Passenger Details and Get OTP
 def send_passenger_details():
