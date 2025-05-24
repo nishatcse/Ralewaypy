@@ -225,9 +225,9 @@ Docker Compose provides a convenient way to build and run the entire application
     docker-compose up --build
     ```
     -   This command will:
-        -   Build the Docker image for the frontend application as defined in `frontend/Dockerfile` (if it's not already built or if changes are detected in the Dockerfile or related files).
+        -   Build the Docker image for the frontend application. The Docker build process uses the project root as its context, and the `frontend/Dockerfile` is configured to copy necessary files from both the project root (e.g., Python scripts, `requirements.txt`) and the `frontend` directory (e.g., Next.js source code, `package.json`).
         -   Start the application container.
-        -   The Python scripts and `requirements.txt` are mounted as volumes, so changes to these files are reflected directly in the container.
+        -   The Python scripts and `requirements.txt` are mounted as volumes, so changes to these files are reflected directly in the container (this is mainly for development convenience).
 3.  Once the build and startup process is complete, the web interface will be accessible at `http://localhost:3000`.
 
 ### Stopping the Application

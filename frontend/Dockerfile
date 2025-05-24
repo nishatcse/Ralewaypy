@@ -7,34 +7,33 @@ RUN apk add --no-cache python3 py3-pip git
 # 3. Set up working directory for Python scripts and install Python dependencies
 WORKDIR /opt/python-scripts
 
-# Copy requirements.txt from the project root (relative to Dockerfile context, which is ./frontend)
-COPY ../requirements.txt ./requirements.txt
+# Copy requirements.txt from the project root (context is now project root)
+COPY requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy Python scripts from the project root
-# Ensure these paths are correct relative to the Dockerfile context (./frontend)
-COPY ../app.py ./app.py
-COPY ../scheduler.py ./scheduler.py
-COPY ../menu.py ./menu.py
-COPY ../test_auth.py ./test_auth.py
-COPY ../config_updater.py ./config_updater.py
+# Copy Python scripts from the project root (context is now project root)
+COPY app.py ./app.py
+COPY scheduler.py ./scheduler.py
+COPY menu.py ./menu.py
+COPY test_auth.py ./test_auth.py
+COPY config_updater.py ./config_updater.py
 # If there's an .env.example, copy it. Otherwise, ensure Python scripts handle its absence.
 # For now, we'll rely on Docker Compose to mount the actual .env file.
 
 # 4. Set up working directory for Next.js app
 WORKDIR /usr/src/app
 
-# Copy package.json and lock files from the frontend directory
-COPY package.json ./
-COPY package-lock.json ./
+# Copy package.json and lock files from the frontend directory (context is project root)
+COPY frontend/package.json ./package.json
+COPY frontend/package-lock.json ./package-lock.json
 # If using yarn, copy yarn.lock instead of package-lock.json
 
 # Install frontend dependencies
 RUN npm install
 # If using yarn, use yarn install --frozen-lockfile
 
-# Copy the rest of the frontend application code
-COPY . .
+# Copy the rest of the frontend application code from the frontend directory (context is project root)
+COPY ./frontend/ .
 
 # Build the Next.js application
 RUN npm run build

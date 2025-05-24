@@ -1,10 +1,8 @@
-version: '3.8' # Specify Docker Compose version
-
 services:
   app: # Service name, can be 'app', 'web', or 'frontend', etc.
     build:
-      context: ./frontend # Path to the directory containing the frontend's Dockerfile
-      dockerfile: Dockerfile # Specifies the Dockerfile to use (frontend/Dockerfile)
+      context: . # Updated context to project root
+      dockerfile: ./frontend/Dockerfile # Updated path to Dockerfile
     container_name: railway_booking_app # Optional: specify a custom container name
     ports:
       - "3000:3000" # Map port 3000 on the host to port 3000 in the container
