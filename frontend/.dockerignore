@@ -1,0 +1,34 @@
+# Docker specific ignores
+
+# Git files
+.git
+.gitignore
+
+# Node.js modules
+node_modules
+
+# Next.js build artifacts and cache
+.next
+build
+out
+
+# Local environment files (if any are specific to frontend and not covered by root .env)
+.env*.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Operating System generated files
+.DS_Store
+Thumbs.db
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Test coverage
+coverage
+
+# TypeScript build info
+*.tsbuildinfo

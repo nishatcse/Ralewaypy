@@ -1,0 +1,29 @@
+version: '3.8' # Specify Docker Compose version
+
+services:
+  app: # Service name, can be 'app', 'web', or 'frontend', etc.
+    build:
+      context: ./frontend # Path to the directory containing the frontend's Dockerfile
+      dockerfile: Dockerfile # Specifies the Dockerfile to use (frontend/Dockerfile)
+    container_name: railway_booking_app # Optional: specify a custom container name
+    ports:
+      - "3000:3000" # Map port 3000 on the host to port 3000 in the container
+    volumes:
+      # Mount the .env file from the host into the container where Python scripts expect it.
+      # This allows users to manage their .env file outside the Docker image.
+      # Ensure the target path '/opt/python-scripts/.env' matches where Python scripts
+      # (specifically load_dotenv() from /opt/python-scripts) would look for it.
+      - ./requirements.txt:/opt/python-scripts/requirements.txt:ro # Mount requirements.txt as well, though it's also copied in Dockerfile. This is mostly for consistency if python scripts ever re-check it.
+      - ./app.py:/opt/python-scripts/app.py:ro
+      - ./scheduler.py:/opt/python-scripts/scheduler.py:ro
+      - ./menu.py:/opt/python-scripts/menu.py:ro
+      - ./test_auth.py:/opt/python-scripts/test_auth.py:ro
+      - ./config_updater.py:/opt/python-scripts/config_updater.py:ro
+      - ./.env:/opt/python-scripts/.env:ro # Mount the .env file as read-only
+    restart: unless-stopped # Optional: Define restart policy
+    environment:
+      # Any runtime environment variables needed by the Next.js app itself can go here.
+      # For example, if the Next.js app needed to know its public URL:
+      # - NEXT_PUBLIC_APP_URL=http://localhost:3000
+      # Python scripts will use the .env file mounted above.
+      NODE_ENV: production # Ensure Next.js runs in production mode.

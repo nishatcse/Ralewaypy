@@ -1,0 +1,6 @@
+requests
+ntplib
+colorama
+python-dotenv
+PyJWT
+aiohttp

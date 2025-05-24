@@ -204,6 +204,49 @@ The Next.js frontend is an interface for the Python scripts located in the proje
 -   The root `.env` file must exist and be configured (either manually or via the "Update Configuration" section of the web UI).
 -   The Python scripts (`app.py`, `scheduler.py`, `test_auth.py`) are executed by the Next.js backend. Ensure they are present and executable.
 
+## Running with Docker Compose
+
+Docker Compose provides a convenient way to build and run the entire application (Next.js frontend and Python backend dependencies) in an isolated containerized environment.
+
+### Prerequisites for Docker Compose
+
+-   **Docker**: Install Docker Desktop (which includes Docker Compose) from [https://www.docker.com/get-started](https://www.docker.com/get-started).
+-   **Docker Compose**: If you don't have Docker Desktop, ensure Docker Compose is installed. See the [official installation guide](https://docs.docker.com/compose/install/).
+
+### Configuration for Docker Compose
+
+-   Ensure your `.env` file in the project root is configured with your credentials and preferences as described in the main "Configuration" section above. The `docker-compose.yml` file is set up to mount this `.env` file into the container, making it available to the Python scripts.
+
+### Build and Run with Docker Compose
+
+1.  Navigate to the project root directory (where `docker-compose.yml` is located).
+2.  Run the following command to build the Docker image and start the application:
+    ```bash
+    docker-compose up --build
+    ```
+    -   This command will:
+        -   Build the Docker image for the frontend application as defined in `frontend/Dockerfile` (if it's not already built or if changes are detected in the Dockerfile or related files).
+        -   Start the application container.
+        -   The Python scripts and `requirements.txt` are mounted as volumes, so changes to these files are reflected directly in the container.
+3.  Once the build and startup process is complete, the web interface will be accessible at `http://localhost:3000`.
+
+### Stopping the Application
+
+-   To stop the application and remove the containers, press `Ctrl+C` in the terminal where `docker-compose up` is running.
+-   Then, you can run the following command in the same directory:
+    ```bash
+    docker-compose down
+    ```
+    This will stop and remove the containers, networks, and volumes created by `docker-compose up`.
+
+### Notes for Docker Usage
+
+-   **First Build Time:** The initial `docker-compose up --build` command might take some time as it needs to download the base Node.js image and install all frontend and Python dependencies.
+-   **Code Changes:**
+    -   Changes to Python scripts (`*.py`) or `requirements.txt` in the project root are reflected inside the container immediately because these files are mounted as volumes.
+    -   Changes to the Next.js frontend code (inside the `frontend/` directory, e.g., `page.tsx`, API routes) will trigger a rebuild of the Next.js application by the development server if you are running in a development setup. However, the provided `Dockerfile` is optimized for a production build (`npm run build`). If you make changes to frontend source code or `frontend/Dockerfile` itself, you should ideally rebuild the image using `docker-compose up --build` to ensure those changes are correctly incorporated into the production build within the Docker image.
+    -   The `docker-compose.yml` mounts the Python scripts as read-only. If any script attempts to modify itself, it will fail. This is a safety measure.
+
 ### Seat Selection Strategy
 
 The application uses a prioritized approach for seat selection:

@@ -34,7 +34,7 @@ export async function POST(request: NextRequest) {
         };
 
         const child = spawn('python3', [scriptName, ...scriptArgs], {
-          cwd: process.cwd(),
+          cwd: '/opt/python-scripts/', // Updated CWD for Docker
           stdio: ['pipe', 'pipe', 'pipe'], // pipe for stdin, stdout, stderr
         });
 
