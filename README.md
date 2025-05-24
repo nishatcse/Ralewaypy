@@ -6,6 +6,8 @@ An automated solution for booking Bangladesh Railway tickets through the officia
 
 This project provides tools to automate the reservation of train tickets from the official Bangladesh Railway platform (https://railapp.railway.gov.bd/). It's designed to help you book tickets exactly when they become available, using internet time synchronization for pinpoint accuracy.
 
+The system can be primarily interacted with via a **Web Frontend (Next.js based GUI)** or through **Command-Line Interface (CLI)** Python scripts.
+
 ## Features
 
 - **Automated Booking**: Reserve seats automatically when they become available
@@ -135,6 +137,73 @@ Countdown: 00:00:05... 00:00:04... 00:00:03... 00:00:02... 00:00:01...
 Launching booking application NOW!
 ```
 
+## Web Frontend (Next.js)
+
+The Next.js web application provides a user-friendly graphical interface to manage configurations and run the Python booking scripts.
+
+### Overview (Frontend)
+
+The web frontend allows you to:
+- View and update all configuration parameters stored in the root `.env` file.
+- Trigger the `app.py` script for immediate booking, with support for interactive input (OTP, passenger names) directly in the UI.
+- Trigger the `scheduler.py` script with a specified target time.
+- Trigger the `test_auth.py` script to verify credentials.
+- View real-time output from the executed scripts.
+
+### Prerequisites for Frontend
+
+- **Node.js**: Version 18+ recommended.
+- **npm** or **yarn**: npm is typically included with Node.js.
+
+### Frontend Setup
+
+1.  Navigate to the `frontend` directory:
+    ```bash
+    cd frontend
+    ```
+2.  Install dependencies:
+    ```bash
+    npm install
+    ```
+    (or `yarn install` if you prefer yarn)
+
+### Running the Frontend Development Server
+
+1.  Ensure you are in the `frontend` directory.
+2.  Start the development server:
+    ```bash
+    npm run dev
+    ```
+    (or `yarn dev`)
+3.  The application will usually be available at `http://localhost:3000`.
+
+### Using the Web Interface
+
+The web interface is divided into several sections:
+
+-   **Current Configuration:** Displays the current settings loaded from the `.env` file.
+-   **Actions:**
+    -   **Update Configuration:** Allows you to modify any of the `.env` settings (e.g., mobile number, password, travel details, desired seats). Click "Update Settings" to save changes to the `.env` file.
+    -   **Book Tickets Now (`app.py`):**
+        -   Runs the main booking script `app.py`.
+        -   **Interactive Prompts:** When `app.py` requires input (like OTP or additional passenger names), a prompt will appear in this section of the UI. Enter the required information and click "Submit Input".
+        -   Script output is streamed in real-time.
+        -   **Payment Limitation:** Please note that the final payment step (selecting bKash, Nagad, etc.) in `app.py` is **not yet handled interactively by this web UI**. If the script reaches this stage, it will wait for input in the terminal where the Next.js *backend* is running (or might appear to hang in the UI if the backend isn't actively monitored for such `input()` calls from the Python script).
+    -   **Schedule Booking (`scheduler.py`):**
+        -   Allows you to run the `scheduler.py` script.
+        -   You must provide a target time in HH:MM:SS format (e.g., `08:00:00`). This will override the `TARGET_TIME` in your `.env` for this specific run.
+        -   Script output is streamed. This script is not interactive beyond the initial time argument.
+    -   **Test Authentication (`test_auth.py`):**
+        -   Runs the `test_auth.py` script to verify your login credentials.
+        -   Script output is streamed. This script is not interactive.
+
+### Backend Dependency
+
+The Next.js frontend is an interface for the Python scripts located in the project root. For the frontend to function correctly:
+-   The Python environment must be set up as described in the "Requirements" and "Installation" sections for the CLI tools (Python 3.8+, `pip install requests ntplib colorama python-dotenv`).
+-   The root `.env` file must exist and be configured (either manually or via the "Update Configuration" section of the web UI).
+-   The Python scripts (`app.py`, `scheduler.py`, `test_auth.py`) are executed by the Next.js backend. Ensure they are present and executable.
+
 ### Seat Selection Strategy
 
 The application uses a prioritized approach for seat selection:
@@ -186,4 +255,4 @@ This project is for personal use only.
 
 ## Disclaimer
 
-This tool is intended for personal use to facilitate ticket booking. Please use responsibly and in accordance with Bangladesh Railway's terms of service.
+This tool is intended for personal use to facilitate ticket booking. Please use responsibly and in accordance with Bangladesh Railway's terms of service. The web frontend aims to simplify the usage of the underlying Python scripts.

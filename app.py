@@ -1,10 +1,25 @@
-import requests, time, jwt, os, aiohttp, asyncio, re
+import requests, time, jwt, os, aiohttp, asyncio, re, json, sys
 from concurrent.futures import ThreadPoolExecutor
 from dotenv import load_dotenv
 from colorama import Fore
 
 # Load environment variables from .env file
 load_dotenv()
+
+# Helper function for interactive input
+def get_interactive_input(key, prompt_message, input_type="text"):
+    # Send a JSON message to stdout to signal the frontend
+    prompt_data = {
+        "action": "PROMPT_USER",
+        "type": input_type,
+        "key": key,
+        "prompt": prompt_message 
+    }
+    print(json.dumps(prompt_data), flush=True)
+    
+    # Read the actual input from stdin
+    user_input = sys.stdin.readline().strip()
+    return user_input
 
 # Read values from the environment
 mobile_number = os.getenv("MOBILE_NUMBER")
@@ -36,21 +51,21 @@ def fetch_auth_token(mobile_number, password):
                 data = response.json()
                 auth_token = data.get("data", {}).get("token")
                 if auth_token:
-                    print(f"{Fore.GREEN}Authentication successful!")
-                    print(f"{Fore.MAGENTA}Auth Token: {auth_token}")
+                    print(f"{Fore.GREEN}Authentication successful!", flush=True)
+                    print(f"{Fore.MAGENTA}Auth Token: {auth_token}", flush=True)
                     return auth_token
                 else:
-                    print(f"{Fore.RED}Failed to retrieve token from response.")
+                    print(f"{Fore.RED}Failed to retrieve token from response.", flush=True)
                     return None
             elif response.status_code in [500, 502, 503, 504]:
-                print(f"{Fore.YELLOW}Server overloaded (HTTP {response.status_code}). Retrying...")
+                print(f"{Fore.YELLOW}Server overloaded (HTTP {response.status_code}). Retrying...", flush=True)
                 time.sleep(1)  # Retry after 1 second
             else:
-                print(f"{Fore.RED}Error: {response.status_code} - {response.text}")
+                print(f"{Fore.RED}Error: {response.status_code} - {response.text}", flush=True)
                 return None
 
         except requests.RequestException as e:
-            print(f"{Fore.RED}Exception occurred while fetching auth token: {e}")
+            print(f"{Fore.RED}Exception occurred while fetching auth token: {e}", flush=True)
             time.sleep(1)  # Retry after 1 second in case of an exception
 
 # Function to extract user info from token
@@ -64,12 +79,12 @@ def extract_user_info_from_token(auth_key):
         user_phone = decoded_token.get("phone_number", "")
         user_name = decoded_token.get("display_name", "")
 
-        print(f"{Fore.CYAN}Extracted from token - Email: {user_email}, Phone: {user_phone}, Name: {user_name}")
+        print(f"{Fore.CYAN}Extracted from token - Email: {user_email}, Phone: {user_phone}, Name: {user_name}", flush=True)
 
         return user_email, user_phone, user_name
 
     except Exception as e:
-        print(f"{Fore.RED}Failed to decode auth token: {e}")
+        print(f"{Fore.RED}Failed to decode auth token: {e}", flush=True)
         return None, None, None
 
 # Function to fetch trip details
@@ -83,7 +98,7 @@ def fetch_trip_details(from_city, to_city, date_of_journey, seat_class, train_nu
         "seat_class": seat_class
     }
 
-    print(f"{Fore.YELLOW}Fetching trip details for {from_city} to {to_city} on {date_of_journey}...")
+    print(f"{Fore.YELLOW}Fetching trip details for {from_city} to {to_city} on {date_of_journey}...", flush=True)
 
     while True:
         try:
@@ -93,7 +108,7 @@ def fetch_trip_details(from_city, to_city, date_of_journey, seat_class, train_nu
                 data = response.json().get("data", {}).get("trains", [])
 
                 if not data:
-                    print(f"{Fore.YELLOW}Trip details not available yet. Retrying in 1 second...")
+                    print(f"{Fore.YELLOW}Trip details not available yet. Retrying in 1 second...", flush=True)
                     time.sleep(1)
                     continue  # Retry if no trips are available
 
@@ -107,24 +122,24 @@ def fetch_trip_details(from_city, to_city, date_of_journey, seat_class, train_nu
                                 train_name = train.get("trip_number")
 
                                 print(f"{Fore.GREEN}Trip details found! Train: {train_name}, Trip ID: {trip_id}, "
-                                      f"Route ID: {trip_route_id}, Boarding Point ID: {boarding_point_id}")
+                                      f"Route ID: {trip_route_id}, Boarding Point ID: {boarding_point_id}", flush=True)
 
                                 return trip_id, trip_route_id, boarding_point_id, train_name
 
-                print(f"{Fore.YELLOW}Train number {train_number} with seat class {seat_class} not available yet. Retrying in 1 second...")
+                print(f"{Fore.YELLOW}Train number {train_number} with seat class {seat_class} not available yet. Retrying in 1 second...", flush=True)
                 time.sleep(1)  # Retry every 1 second
 
             elif response.status_code in [500, 502, 503, 504]:
-                print(f"{Fore.YELLOW}Server overloaded (HTTP {response.status_code}). Retrying in 1 second...")
+                print(f"{Fore.YELLOW}Server overloaded (HTTP {response.status_code}). Retrying in 1 second...", flush=True)
                 time.sleep(1)  # Retry after 1 second
 
             else:
-                print(f"{Fore.RED}Failed to fetch trip details. HTTP Status: {response.status_code}")
-                print(f"{Fore.CYAN}Server response: {response.text}")
+                print(f"{Fore.RED}Failed to fetch trip details. HTTP Status: {response.status_code}", flush=True)
+                print(f"{Fore.CYAN}Server response: {response.text}", flush=True)
                 time.sleep(1)  # Retry after a delay on other errors
 
         except requests.RequestException as e:
-            print(f"{Fore.RED}Error during trip details fetch: {e}")
+            print(f"{Fore.RED}Error during trip details fetch: {e}", flush=True)
             time.sleep(1)  # Retry after 1 second in case of an error
 
 # Async function to check seat booking availability
@@ -150,11 +165,11 @@ async def is_booking_available():
                         data = await response.json()
                         # If seatLayout is available, return immediately
                         if "seatLayout" in data.get("data", {}):
-                            print(f"{Fore.GREEN}Booking is now available!")
+                            print(f"{Fore.GREEN}Booking is now available!", flush=True)
                             return data["data"]["seatLayout"]
 
                     elif response.status in [500, 502, 503, 504]:
-                        print(f"{Fore.YELLOW}Server overloaded (HTTP {response.status}). Retrying...")
+                        print(f"{Fore.YELLOW}Server overloaded (HTTP {response.status}). Retrying...", flush=True)
 
                     elif response.status == 422:
                         # NEW CODE: Process error details for 422 response
@@ -174,17 +189,17 @@ async def is_booking_available():
                             error_message = "Unknown error."
 
                         # Print the server response
-                        print(f"{Fore.CYAN}Server response: {error_data}")
+                        print(f"{Fore.CYAN}Server response: {error_data}", flush=True)
 
                         # Retry ONLY IF the message contains "ticket purchase for this trip will be available"
                         if "ticket purchase for this trip will be available" in error_message:
-                            print(f"{Fore.YELLOW}Booking is not open yet: {error_message}. Retrying until available...")
+                            print(f"{Fore.YELLOW}Booking is not open yet: {error_message}. Retrying until available...", flush=True)
                             await asyncio.sleep(MIN_LOOP_INTERVAL)  # Retry after 1 ms
                             continue  # Go back to the loop
 
                         # If error key indicates OrderLimitExceeded, show a short message.
                         if error_key == "OrderLimitExceeded":
-                            print(f"{Fore.RED}Error: You have reached the maximum ticket booking limit for {from_city} to {to_city} on {date_of_journey} for {train_name}. Please try booking again on a different day, or consider changing the train number, origin station, or destination.")
+                            print(f"{Fore.RED}Error: You have reached the maximum ticket booking limit for {from_city} to {to_city} on {date_of_journey} for {train_name}. Please try booking again on a different day, or consider changing the train number, origin station, or destination.", flush=True)
                         else:
                             # For other messages like ongoing purchase process or multiple order attempts,
                             # attempt to extract the wait time from the message and calculate the retry time.
@@ -197,21 +212,21 @@ async def is_booking_available():
                                 current_time_formatted = time.strftime("%I:%M:%S %p", time.localtime())
                                 future_time_formatted = time.strftime("%I:%M:%S %p", time.localtime(time.time() + total_seconds))
 
-                                print(f"{Fore.RED}Error: {error_message} Current system time is {current_time_formatted}. Please try again after {future_time_formatted}.")
+                                print(f"{Fore.RED}Error: {error_message} Current system time is {current_time_formatted}. Please try again after {future_time_formatted}.", flush=True)
                             else:
-                                print(f"{Fore.YELLOW}{error_message} Please try again later.")
+                                print(f"{Fore.YELLOW}{error_message} Please try again later.", flush=True)
 
                         # Stop further processing in these cases.
                         exit()
                     else:
-                        print(f"{Fore.RED}Failed to check booking availability. HTTP Status: {response.status}")
+                        print(f"{Fore.RED}Failed to check booking availability. HTTP Status: {response.status}", flush=True)
                         text_resp = await response.text()
-                        print(f"{Fore.CYAN}Server response: {text_resp}")
+                        print(f"{Fore.CYAN}Server response: {text_resp}", flush=True)
                         
             except aiohttp.ClientError as e:
                 end_time = time.perf_counter()
                 elapsed = end_time - start_time
-                print(f"{Fore.RED}An error occurred while checking booking availability: {e}")
+                print(f"{Fore.RED}An error occurred while checking booking availability: {e}", flush=True)
 
             # Enforce a 1 ms minimum gap between loop starts
             if elapsed < MIN_LOOP_INTERVAL:
@@ -326,10 +341,10 @@ def get_ticket_ids_from_layout(seat_layout, desired_seats, max_selectable_seat):
 
     # Return the seats found even if they are fewer than max_selectable_seat
     if selected_seat_details:
-        print(f"{Fore.YELLOW}Warning: Proceeding with {len(selected_seat_details)} seats instead of {max_selectable_seat}")
+        print(f"{Fore.YELLOW}Warning: Proceeding with {len(selected_seat_details)} seats instead of {max_selectable_seat}", flush=True)
         return selected_seat_details
 
-    print(f"{Fore.RED}No seats available to proceed.")
+    print(f"{Fore.RED}No seats available to proceed.", flush=True)
     return None
 
 # Handling multiple tickets for confirm payload
@@ -339,7 +354,8 @@ def prepare_confirm_payload(otp):
     if len(ticket_ids) > 1:
         passenger_names = [user_name]  # Start with the first user
         for i in range(1, len(ticket_ids)):
-            passenger_name = input(f"{Fore.YELLOW}Enter passenger {i + 1} name: ")
+            prompt_msg = f"Enter passenger {i + 1} name: " # Colorama removed
+            passenger_name = get_interactive_input(f"passenger_name_{i+1}", prompt_msg)
             passenger_names.append(passenger_name)
 
         confirm_payload = {
@@ -389,27 +405,27 @@ def prepare_confirm_payload(otp):
 def reserve_seat():
     global ticket_ids  # Declare global before using the variable
 
-    print(f"{Fore.YELLOW}Waiting for seat layout availability...")
+    print(f"{Fore.YELLOW}Waiting for seat layout availability...", flush=True)
 
     while True:  # Keep retrying until at least one seat is reserved
         # Check for seat layout availability
         seat_layout = asyncio.run(is_booking_available())
 
         if not seat_layout:
-            print(f"{Fore.RED}Seat layout could not be retrieved. Retrying...")
+            print(f"{Fore.RED}Seat layout could not be retrieved. Retrying...", flush=True)
             time.sleep(1)  # Retry after 1 second
             continue
 
         ticket_id_map = get_ticket_ids_from_layout(seat_layout, desired_seats, max_selectable_seat)
 
         if not ticket_id_map:
-            print(f"{Fore.RED}No matching seats found based on desired preferences. Retrying...")
+            print(f"{Fore.RED}No matching seats found based on desired preferences. Retrying...", flush=True)
             time.sleep(1)  # Retry after 1 second
             continue
 
         # Prepare ticket_ids list and seat mapping for display
         ticket_ids = list(ticket_id_map.keys())
-        print(f"{Fore.GREEN}Seats matched! Details: {', '.join([f'{ticket_id_map[ticket]} (Ticket ID: {ticket})' for ticket in ticket_ids])}")
+        print(f"{Fore.GREEN}Seats matched! Details: {', '.join([f'{ticket_id_map[ticket]} (Ticket ID: {ticket})' for ticket in ticket_ids])}", flush=True)
 
         successful_ticket_ids = []
 
@@ -420,21 +436,21 @@ def reserve_seat():
                 "route_id": trip_route_id
             }
 
-            print(f"{Fore.CYAN}Attempting to reserve Seat {ticket_id_map[ticket]} (Ticket ID: {ticket})...")
+            print(f"{Fore.CYAN}Attempting to reserve Seat {ticket_id_map[ticket]} (Ticket ID: {ticket})...", flush=True)
 
             while True:
                 try:
                     response = requests.patch(url, headers=headers, json=params)
-                    print(f"{Fore.CYAN}Response from Reserve Seat API for Seat {ticket_id_map[ticket]} (Ticket ID: {ticket}): {response.text}")
+                    print(f"{Fore.CYAN}Response from Reserve Seat API for Seat {ticket_id_map[ticket]} (Ticket ID: {ticket}): {response.text}", flush=True)
 
                     if response.status_code == 200:
                         data = response.json()
 
                         if data["data"].get("ack") == 1:  # Success is indicated by "ack": 1
-                            print(f"{Fore.GREEN}Seat {ticket_id_map[ticket]} (Ticket ID: {ticket}) reserved successfully!")
+                            print(f"{Fore.GREEN}Seat {ticket_id_map[ticket]} (Ticket ID: {ticket}) reserved successfully!", flush=True)
                             return True
                         else:
-                            print(f"{Fore.RED}Failed to reserve seat {ticket_id_map[ticket]} (Ticket ID: {ticket}): {data}")
+                            print(f"{Fore.RED}Failed to reserve seat {ticket_id_map[ticket]} (Ticket ID: {ticket}): {data}", flush=True)
                             return False
 
                     elif response.status_code == 422:
@@ -442,19 +458,19 @@ def reserve_seat():
                         error_msg = error_data.get("error", {}).get("messages", {}).get("error_msg", "")
 
                         if "Sorry! this ticket is not available now." in error_msg:
-                            print(f"{Fore.RED}Seat {ticket_id_map[ticket]} (Ticket ID: {ticket}) is not available now. Skipping retry.")
+                            print(f"{Fore.RED}Seat {ticket_id_map[ticket]} (Ticket ID: {ticket}) is not available now. Skipping retry.", flush=True)
                             return False
 
                     elif response.status_code in [500, 502, 503, 504]:
-                        print(f"{Fore.YELLOW}Server overloaded (HTTP {response.status_code}). Retrying in 100 milliseconds...")
+                        print(f"{Fore.YELLOW}Server overloaded (HTTP {response.status_code}). Retrying in 100 milliseconds...", flush=True)
                         time.sleep(0.1)  # Retry after 100 milliseconds
 
                     else:
-                        print(f"{Fore.RED}Error: {response.status_code} - {response.text}")
+                        print(f"{Fore.RED}Error: {response.status_code} - {response.text}", flush=True)
                         return False
 
                 except Exception as e:
-                    print(f"{Fore.RED}Exception occurred while reserving seat {ticket_id_map[ticket]} (Ticket ID: {ticket}): {e}")
+                    print(f"{Fore.RED}Exception occurred while reserving seat {ticket_id_map[ticket]} (Ticket ID: {ticket}): {e}", flush=True)
                     time.sleep(0.1)  # Retry after 100 milliseconds in case of an exception
 
         # Reserve seats sequentially
@@ -465,15 +481,15 @@ def reserve_seat():
             if reserve_single_seat(ticket):
                 successful_ticket_ids.append(ticket)
             else:
-                print(f"{Fore.RED}Skipping seat {ticket_id_map[ticket]} due to unavailability.")
+                print(f"{Fore.RED}Skipping seat {ticket_id_map[ticket]} due to unavailability.", flush=True)
 
         if successful_ticket_ids:
             global reserved_ticket_ids
             reserved_ticket_ids = successful_ticket_ids
-            print(f"{Fore.GREEN}Successfully reserved {len(successful_ticket_ids)} seats: {', '.join([ticket_id_map[ticket] for ticket in successful_ticket_ids])}")
+            print(f"{Fore.GREEN}Successfully reserved {len(successful_ticket_ids)} seats: {', '.join([ticket_id_map[ticket] for ticket in successful_ticket_ids])}", flush=True)
             return True
         else:
-            print(f"{Fore.RED}No seats could be reserved. Retrying...")
+            print(f"{Fore.RED}No seats could be reserved. Retrying...", flush=True)
             time.sleep(1)  # Retry after 1 second
 
 # Step 2: Send Passenger Details and Get OTP
@@ -488,29 +504,29 @@ def send_passenger_details():
     while True:
         try:
             response = requests.post(url, headers=headers, json=payload)
-            print(f"{Fore.CYAN}Response from Passenger Details API: {response.text}")
+            print(f"{Fore.CYAN}Response from Passenger Details API: {response.text}", flush=True)
 
             if response.status_code == 200:
                 data = response.json()
 
                 if data["data"]["success"]:
-                    print(f"{Fore.GREEN}OTP sent successfully!")
+                    print(f"{Fore.GREEN}OTP sent successfully!", flush=True)
                     return True
 
                 else:
-                    print(f"{Fore.RED}Failed to send OTP: {data}")
+                    print(f"{Fore.RED}Failed to send OTP: {data}", flush=True)
                     return False
 
             elif response.status_code in [500, 502, 503, 504]:
-                print(f"{Fore.YELLOW}Server overloaded (HTTP {response.status_code}). Retrying in 1 second...")
+                print(f"{Fore.YELLOW}Server overloaded (HTTP {response.status_code}). Retrying in 1 second...", flush=True)
                 time.sleep(1)  # Retry after 1 second
 
             else:
-                print(f"{Fore.RED}Error: {response.status_code} - {response.text}")
+                print(f"{Fore.RED}Error: {response.status_code} - {response.text}", flush=True)
                 return False
 
         except requests.RequestException as e:
-            print(f"{Fore.RED}Exception occurred while sending passenger details: {e}")
+            print(f"{Fore.RED}Exception occurred while sending passenger details: {e}", flush=True)
             time.sleep(1)  # Retry after 1 second in case of an exception
 
 # Step 3: Verify OTP and Confirm Booking
@@ -527,38 +543,39 @@ def verify_and_confirm_booking(otp):
     try:
         while True:
             response = requests.post(verify_url, headers=headers, json=verify_payload)
-            print(f"{Fore.CYAN}Response from OTP Verification API: {response.text}")
+            print(f"{Fore.CYAN}Response from OTP Verification API: {response.text}", flush=True)
 
             if response.status_code == 200:
                 data = response.json()
 
                 if not data["data"]["success"]:
-                    print(f"{Fore.RED}Failed to verify OTP: {data}")
+                    print(f"{Fore.RED}Failed to verify OTP: {data}", flush=True)
                     return False
 
-                print(f"{Fore.GREEN}OTP verified successfully!")
+                print(f"{Fore.GREEN}OTP verified successfully!", flush=True)
                 break
 
             elif response.status_code in [500, 502, 503, 504]:
-                print(f"{Fore.YELLOW}Server overloaded (HTTP {response.status_code}). Retrying in 1 second.")
+                print(f"{Fore.YELLOW}Server overloaded (HTTP {response.status_code}). Retrying in 1 second.", flush=True)
                 time.sleep(1)
 
             elif response.status_code == 422:
                 data = response.json()
                 error_message = data.get("error", {}).get("messages", {}).get("message", "Unknown error")
                 error_key = data.get("error", {}).get("messages", {}).get("errorKey", "Unknown errorKey")
-                print(f"{Fore.RED}Error: {error_message} (ErrorKey: {error_key})")
+                print(f"{Fore.RED}Error: {error_message} (ErrorKey: {error_key})", flush=True)
                 if error_key == "OtpNotVerified":
-                    otp = input(f"{Fore.YELLOW}The OTP does not match. Please enter the correct OTP: ")
+                    # otp = input(f"{Fore.YELLOW}The OTP does not match. Please enter the correct OTP: ") # Original
+                    otp = get_interactive_input("otp_retry", "The OTP does not match. Please enter the correct OTP: ") # Colorama removed
                     verify_payload["otp"] = otp
                 else:
                     return False
             else:
-                print(f"{Fore.RED}Error: {response.status_code} - {response.text}")
+                print(f"{Fore.RED}Error: {response.status_code} - {response.text}", flush=True)
                 return False
 
     except Exception as e:
-        print(f"{Fore.RED}Exception occurred: {e}")
+        print(f"{Fore.RED}Exception occurred: {e}", flush=True)
         time.sleep(1)
         return False
 
@@ -567,95 +584,95 @@ def verify_and_confirm_booking(otp):
 
     confirm_payload = prepare_confirm_payload(otp)
 
-    # Payment method selection prompt
-    print(f"{Fore.CYAN}Select Payment Method:")
-    print(f"1. Bkash\n2. Nagad\n3. Rocket\n4. Upay\n5. VISA\n6. Mastercard\n7. DBBL Nexus")
+    # Payment method selection prompt - REMAINS UNCHANGED (uses original input())
+    print(f"{Fore.CYAN}Select Payment Method:", flush=True)
+    print(f"1. Bkash\n2. Nagad\n3. Rocket\n4. Upay\n5. VISA\n6. Mastercard\n7. DBBL Nexus", flush=True)
 
     while True:
-        payment_choice = input(f"{Fore.YELLOW}Enter the number corresponding to your payment method: ")
+        payment_choice = input(f"{Fore.YELLOW}Enter the number corresponding to your payment method: ") # Original input()
         if payment_choice == "1":  # bkash (default)
-            print(f"{Fore.GREEN}Payment Method Selected: bKash")
+            print(f"{Fore.GREEN}Payment Method Selected: bKash", flush=True)
             break
 
         elif payment_choice == "2":  # Nagad
             confirm_payload["is_bkash_online"] = False
             confirm_payload["selected_mobile_transaction"] = 3
-            print(f"{Fore.GREEN}Payment Method Selected: Nagad")
+            print(f"{Fore.GREEN}Payment Method Selected: Nagad", flush=True)
             break
 
         elif payment_choice == "3":  # Rocket
             confirm_payload["is_bkash_online"] = False
             confirm_payload["selected_mobile_transaction"] = 4
-            print(f"{Fore.GREEN}Payment Method Selected: Rocket")
+            print(f"{Fore.GREEN}Payment Method Selected: Rocket", flush=True)
             break
 
         elif payment_choice == "4":  # Upay
             confirm_payload["is_bkash_online"] = False
             confirm_payload["selected_mobile_transaction"] = 5
-            print(f"{Fore.GREEN}Payment Method Selected: Upay")
+            print(f"{Fore.GREEN}Payment Method Selected: Upay", flush=True)
             break
 
         elif payment_choice == "5":  # VISA
             confirm_payload["is_bkash_online"] = False
             confirm_payload.pop("selected_mobile_transaction", None)
             confirm_payload["pg"] = "visa"
-            print(f"{Fore.GREEN}Payment Method Selected: VISA")
+            print(f"{Fore.GREEN}Payment Method Selected: VISA", flush=True)
             break
 
         elif payment_choice == "6":  # Mastercard
             confirm_payload["is_bkash_online"] = False
             confirm_payload.pop("selected_mobile_transaction", None)
             confirm_payload["pg"] = "mastercard"
-            print(f"{Fore.GREEN}Payment Method Selected: Mastercard")
+            print(f"{Fore.GREEN}Payment Method Selected: Mastercard", flush=True)
             break
 
         elif payment_choice == "7":  # DBBL Nexus
             confirm_payload["is_bkash_online"] = False
             confirm_payload.pop("selected_mobile_transaction", None)
             confirm_payload["pg"] = "nexus"
-            print(f"{Fore.GREEN}Payment Method Selected: DBBL Nexus")
+            print(f"{Fore.GREEN}Payment Method Selected: DBBL Nexus", flush=True)
             break
-    else:
-        print(f"{Fore.RED}Invalid selection! Please enter a number between 1 and 7.")
+        else: # Corrected this part from original code, should be else not `    else:`
+            print(f"{Fore.RED}Invalid selection! Please enter a number between 1 and 7.", flush=True)
 
     while True:
         try:
             response = requests.patch(confirm_url, headers=headers, json=confirm_payload)
-            print(f"{Fore.CYAN}Response from Confirm Booking API: {response.text}")
+            print(f"{Fore.CYAN}Response from Confirm Booking API: {response.text}", flush=True)
 
             if response.status_code == 200:
                 data = response.json()
 
                 if "redirectUrl" in data["data"]:
                     redirect_url = data["data"]["redirectUrl"]
-                    print(f"\n{Fore.GREEN}{'='*50}")
-                    print(f"{Fore.GREEN}Booking confirmed successfully!")
-                    print(f"{Fore.YELLOW}IMPORTANT: Please note that this payment link can be used ONLY ONCE.")
-                    print(f"{Fore.BLUE}Payment URL: {redirect_url}")
-                    print(f"{Fore.GREEN}{'='*50}\n")
+                    print(f"\n{Fore.GREEN}{'='*50}", flush=True)
+                    print(f"{Fore.GREEN}Booking confirmed successfully!", flush=True)
+                    print(f"{Fore.YELLOW}IMPORTANT: Please note that this payment link can be used ONLY ONCE.", flush=True)
+                    print(f"{Fore.BLUE}Payment URL: {redirect_url}", flush=True)
+                    print(f"{Fore.GREEN}{'='*50}\n", flush=True)
 
                     return True  # Ensure successful return
 
                 else:
-                    print(f"{Fore.RED}Failed to confirm booking: {data}")
+                    print(f"{Fore.RED}Failed to confirm booking: {data}", flush=True)
                     return False
 
             elif response.status_code in [500, 502, 503, 504]:
-                print(f"{Fore.YELLOW}Server overloaded (HTTP {response.status_code}). Retrying in 1 second...")
+                print(f"{Fore.YELLOW}Server overloaded (HTTP {response.status_code}). Retrying in 1 second...", flush=True)
                 time.sleep(1)
 
             else:
-                print(f"{Fore.RED}Error: {response.status_code} - {response.text}")
+                print(f"{Fore.RED}Error: {response.status_code} - {response.text}", flush=True)
                 return False
 
         except requests.RequestException as e:
-            print(f"{Fore.RED}Exception occurred while confirming booking: {e}")
+            print(f"{Fore.RED}Exception occurred while confirming booking: {e}", flush=True)
             time.sleep(1)
             return False
 
 # Main Execution Flow
 try:
-    print(f"{Fore.CYAN}Starting ticket booking process...")
+    print(f"{Fore.CYAN}Starting ticket booking process...", flush=True)
 
     # Step 1: Authenticate user and fetch authorization token
     auth_key = fetch_auth_token(mobile_number, password)
@@ -664,7 +681,7 @@ try:
     if auth_key:
         headers = {"Authorization": f"Bearer {auth_key}"}
     else:
-        print(f"{Fore.RED}Failed to fetch auth token. Exiting.")
+        print(f"{Fore.RED}Failed to fetch auth token. Exiting.", flush=True)
         exit()
 
     # Step 2: Retrieve trip details for the selected journey
@@ -674,25 +691,26 @@ try:
 
     # Ensure the retrieved trip details are valid
     if not trip_id or not trip_route_id or not boarding_point_id:
-        print(f"{Fore.RED}Error: Could not fetch trip details. Please check your inputs.")
+        print(f"{Fore.RED}Error: Could not fetch trip details. Please check your inputs.", flush=True)
         exit()
 
     # Step 3: Attempt to reserve selected seats
     if reserve_seat():
         # Step 4: Send passenger details and request OTP for confirmation
         if send_passenger_details():
-            print(f"{Fore.CYAN}Proceeding to OTP verification and confirmation...")
+            print(f"{Fore.CYAN}Proceeding to OTP verification and confirmation...", flush=True)
 
             # Step 5: Verify OTP and confirm the booking
-            otp = input(f"{Fore.YELLOW}Enter the OTP received: ")
+            # otp = input(f"{Fore.YELLOW}Enter the OTP received: ") # Original
+            otp = get_interactive_input("otp", "Enter the OTP received: ") # Colorama removed
             if verify_and_confirm_booking(otp):
-                print(f"{Fore.GREEN}Booking process completed successfully!")
+                print(f"{Fore.GREEN}Booking process completed successfully!", flush=True)
             else:
-                print(f"{Fore.RED}Failed to complete booking process.")
+                print(f"{Fore.RED}Failed to complete booking process.", flush=True)
         else:
-            print(f"{Fore.RED}Failed to send passenger details and get OTP.")
+            print(f"{Fore.RED}Failed to send passenger details and get OTP.", flush=True)
     else:
-        print(f"{Fore.RED}Failed to reserve the seat.")
+        print(f"{Fore.RED}Failed to reserve the seat.", flush=True)
 
 except Exception as e:
-    print(f"{Fore.RED}An unexpected error occurred: {e}")
+    print(f"{Fore.RED}An unexpected error occurred: {e}", flush=True)

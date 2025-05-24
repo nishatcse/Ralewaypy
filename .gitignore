@@ -8,3 +8,20 @@ wheels/
 
 # Virtual environments
 .venv
+env/
+venv/
+ENV/
+VENV/
+*.pyd
+.Python
+
+# Next.js frontend
+frontend/node_modules
+frontend/.next
+frontend/out
+frontend/build
+frontend/.DS_Store
+frontend/*.pem
+frontend/.env*.local
+frontend/.vercel
+frontend/*.tsbuildinfo
