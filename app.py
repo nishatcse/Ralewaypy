@@ -2,6 +2,7 @@ import requests, time, jwt, os, aiohttp, asyncio, re
 from concurrent.futures import ThreadPoolExecutor
 from dotenv import load_dotenv
 from colorama import Fore
+from turnstile import get_turnstile_token
 
 # Load environment variables from .env file
 load_dotenv()
@@ -23,10 +24,17 @@ desired_seats = os.getenv("DESIRED_SEATS").split(',') if os.getenv("DESIRED_SEAT
 # Function to fetch auth token dynamically
 def fetch_auth_token(mobile_number, password):
     login_url = "https://railspaapi.shohoz.com/v1.0/app/auth/sign-in"
+
+    # Get Turnstile token
+    turnstile_token = get_turnstile_token()
+
     payload = {
         "mobile_number": mobile_number,
-        "password": password
+        "password": password,
     }
+
+    if turnstile_token:
+        payload["cft_response"] = turnstile_token
 
     while True:
         try:

@@ -1,6 +1,7 @@
 import requests, jwt, os
 from dotenv import load_dotenv
 from colorama import Fore
+from turnstile import get_turnstile_token
 
 # Load environment variables from .env file
 load_dotenv()
@@ -12,10 +13,17 @@ password = os.getenv("PASSWORD")
 # Function to fetch auth token dynamically
 def fetch_auth_token(mobile_number, password):
     login_url = "https://railspaapi.shohoz.com/v1.0/app/auth/sign-in"
+
+    # First get the turnstile token via browser automation
+    turnstile_token = get_turnstile_token()
+
     payload = {
         "mobile_number": mobile_number,
-        "password": password
+        "password": password,
     }
+
+    if turnstile_token:
+        payload["cft_response"] = turnstile_token
 
     try:
         response = requests.post(login_url, json=payload)
