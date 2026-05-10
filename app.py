@@ -1,5 +1,6 @@
 import requests, time, jwt, os, asyncio, re, json
 import urllib.request, urllib.parse
+import subprocess, shutil, signal
 import websocket
 from dotenv import load_dotenv
 from colorama import Fore
@@ -296,8 +297,21 @@ def auto_login_if_needed(ws_url):
         passField.dispatchEvent(new Event('input', {{ bubbles: true }}));
         passField.dispatchEvent(new Event('change', {{ bubbles: true }}));
 
-        // Small delay for framework to process
-        await new Promise(r => setTimeout(r, 500));
+        // Wait for Cloudflare Turnstile to load and complete verification
+        // The challenge widget needs time to render and solve
+        let turnstileReady = false;
+        for (let i = 0; i < 15; i++) {{
+            await new Promise(r => setTimeout(r, 1000));
+            const cft = document.querySelector('input[name="cf-turnstile-response"]');
+            if (cft && cft.value && cft.value.length > 10) {{
+                turnstileReady = true;
+                break;
+            }}
+        }}
+
+        if (!turnstileReady) {{
+            return JSON.stringify({{ok: false, msg: 'Cloudflare Turnstile did not load in 15s'}});
+        }}
 
         // Find and click the submit button
         const btns = document.querySelectorAll('button[type="submit"], button.login-btn, button.btn-login, input[type="submit"]');
@@ -547,8 +561,10 @@ def is_booking_available():
                 print(f"{Fore.CYAN}Full 422 body: {r['b'][:500]}")
 
                 if consecutive_failures >= MAX_TRANSIENT_RETRIES:
-                    print(f"{Fore.RED}Too many consecutive 422 errors. Giving up.")
-                    exit()
+                    print(f"{Fore.YELLOW}Hit {MAX_TRANSIENT_RETRIES} consecutive 422 errors. Resetting and continuing...")
+                    consecutive_failures = 0
+                    invalidate_turnstile()
+                    time.sleep(10)
 
                 # Refresh turnstile token — stale token is a common cause
                 invalidate_turnstile()
@@ -749,13 +765,188 @@ def ensure_on_search_page():
     print(f"{Fore.YELLOW}Turnstile widget may not have loaded. Continuing anyway...")
 
 
+def launch_chrome():
+    """Launch Chrome with remote debugging, killing any existing debug session first.
+    Clears user-data-dir for a clean session (forces fresh login)."""
+    CHROME_DEBUG_PORT = 9222
+    CHROME_USER_DATA = "/tmp/chrome-debug"
+
+    # Check if port 9222 is already listening
+    def port_is_open():
+        try:
+            req = urllib.request.Request(f'http://localhost:{CHROME_DEBUG_PORT}/json/version')
+            with urllib.request.urlopen(req, timeout=3) as r:
+                return True
+        except:
+            return False
+
+    if port_is_open():
+        print(f"{Fore.YELLOW}Chrome debug port {CHROME_DEBUG_PORT} already open. Killing existing session...")
+        # Find and kill the Chrome process using this debug port
+        try:
+            result = subprocess.run(
+                ['lsof', '-ti', f':{CHROME_DEBUG_PORT}'],
+                capture_output=True, text=True, timeout=5
+            )
+            for pid in result.stdout.strip().split('\n'):
+                if pid:
+                    try:
+                        os.kill(int(pid), signal.SIGTERM)
+                    except (ProcessLookupError, ValueError):
+                        pass
+            time.sleep(2)
+        except Exception as e:
+            print(f"{Fore.YELLOW}Could not kill existing Chrome: {e}")
+            # Fallback: pkill
+            subprocess.run(['pkill', '-f', f'remote-debugging-port={CHROME_DEBUG_PORT}'],
+                           capture_output=True, timeout=5)
+            time.sleep(2)
+
+    # Clean user data for fresh session
+    if os.path.exists(CHROME_USER_DATA):
+        print(f"{Fore.YELLOW}Clearing Chrome user data for clean session...")
+        shutil.rmtree(CHROME_USER_DATA, ignore_errors=True)
+
+    # Launch Chrome
+    print(f"{Fore.CYAN}Launching Chrome with remote debugging on port {CHROME_DEBUG_PORT}...")
+    chrome_cmd = [
+        'google-chrome',
+        f'--remote-debugging-port={CHROME_DEBUG_PORT}',
+        f'--user-data-dir={CHROME_USER_DATA}',
+        '--remote-allow-origins=*',
+        '--no-first-run',
+        '--no-default-browser-check',
+        'https://eticket.railway.gov.bd/'
+    ]
+    subprocess.Popen(chrome_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    # Wait for Chrome to be ready
+    print(f"{Fore.YELLOW}Waiting for Chrome to start...")
+    for i in range(30):
+        time.sleep(1)
+        if port_is_open():
+            print(f"{Fore.GREEN}Chrome is ready on port {CHROME_DEBUG_PORT}!")
+            # Invalidate any stale cached WS URL
+            global _cached_ws_url, _cached_ws_url_time
+            _cached_ws_url = None
+            _cached_ws_url_time = 0
+            return True
+    print(f"{Fore.RED}Chrome failed to start within 30s.")
+    return False
+
+
+def fresh_login():
+    """Open homepage first, wait for it to load, click Login link,
+    then fill credentials and submit. This ensures Cloudflare loads properly."""
+    print(f"{Fore.CYAN}Starting fresh login...")
+
+    # Step 1: Wait for homepage to fully load
+    print(f"{Fore.YELLOW}Waiting for homepage to load...")
+    time.sleep(5)  # Give the Angular app time to bootstrap
+
+    ws_url = get_ws_url(force=True)
+    if not ws_url:
+        print(f"{Fore.RED}Cannot connect to Chrome for login.")
+        return False
+
+    current = exec_js(ws_url, "location.href")
+    print(f"{Fore.CYAN}Current page: {current}")
+
+    # Step 2: If on homepage, find and click the Login link/button
+    if current and '/login' not in current:
+        print(f"{Fore.YELLOW}Looking for Login link on homepage...")
+        clicked = exec_js(ws_url, '''(() => {
+            // Try common login link selectors
+            const selectors = [
+                'a[href*="/login"]',
+                'a[routerlink*="/login"]',
+                'button.login-btn',
+                'a.login-btn'
+            ];
+            for (const sel of selectors) {
+                const el = document.querySelector(sel);
+                if (el) {
+                    el.click();
+                    return 'clicked: ' + sel;
+                }
+            }
+            // Fallback: find any link/button containing "Login" text
+            const allLinks = document.querySelectorAll('a, button');
+            for (const el of allLinks) {
+                const text = el.textContent.trim().toLowerCase();
+                if (text === 'login' || text === 'log in' || text === 'sign in') {
+                    el.click();
+                    return 'clicked text: ' + el.textContent.trim();
+                }
+            }
+            return null;
+        })()''')
+
+        if clicked:
+            print(f"{Fore.GREEN}Clicked login link ({clicked}). Waiting for login page...")
+        else:
+            # If no login link found, navigate directly
+            print(f"{Fore.YELLOW}No login link found, navigating directly...")
+            exec_js(ws_url, "location.href = 'https://eticket.railway.gov.bd/login'")
+
+        time.sleep(5)  # Wait for navigation and page load
+        ws_url = get_ws_url(force=True)
+        if not ws_url:
+            return False
+
+    # Step 3: Wait for login page to fully render (Angular app)
+    print(f"{Fore.YELLOW}Waiting for login form to render...")
+    for i in range(15):
+        has_form = exec_js(ws_url, '''(() => {
+            const inputs = document.querySelectorAll('input');
+            return inputs.length >= 2;
+        })()''')
+        if has_form:
+            print(f"{Fore.GREEN}Login form loaded!")
+            break
+        time.sleep(1)
+    else:
+        print(f"{Fore.RED}Login form did not load in 15s.")
+        return False
+
+    # Step 4: Fill credentials and submit (auto_login waits for Cloudflare)
+    auto_login_if_needed(ws_url)
+
+    # Step 5: Verify login succeeded — wait for token in localStorage
+    for i in range(30):
+        time.sleep(1)
+        try:
+            ws_url = get_ws_url(force=True)
+            if not ws_url:
+                continue
+            token = exec_js(ws_url, "localStorage.getItem('token')")
+            if token:
+                print(f"{Fore.GREEN}Login successful! Auth token obtained.")
+                return True
+        except:
+            pass
+
+    print(f"{Fore.RED}Login did not complete within 30s.")
+    return False
+
+
 def main():
     global trip_id, trip_route_id, boarding_point_id, train_name
     try:
         print(f"{Fore.CYAN}Starting ticket booking process...")
+
+        # --- Step 0: Launch Chrome and perform fresh login ---
+        if not launch_chrome():
+            print(f"{Fore.RED}Failed to launch Chrome. Exiting.")
+            exit()
+
+        if not fresh_login():
+            print(f"{Fore.RED}Failed to log in automatically. Exiting.")
+            exit()
+
         auth_key = fetch_auth_key()
         if not auth_key:
-            print(f"{Fore.RED}Failed to fetch auth token. Make sure Chrome is running with --remote-debugging-port=9222 and you're logged in at eticket.railway.gov.bd")
+            print(f"{Fore.RED}Failed to fetch auth token after login. Exiting.")
             exit()
 
         print(f"{Fore.GREEN}Auth token obtained successfully!")
