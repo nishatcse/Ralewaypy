@@ -75,7 +75,6 @@
                 { "target": "rpm", "arch": ["x64"] }
             ],
             "category": "Utility",
-            "icon": "build/icon.png",
             "executableName": "raleway"
         },
         "rpm": {
