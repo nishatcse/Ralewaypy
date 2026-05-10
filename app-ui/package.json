@@ -70,10 +70,12 @@
         ],
         "linux": {
             "target": [
-                { "target": "AppImage", "arch": ["x64"] }
+                { "target": "AppImage", "arch": ["x64"] },
+                { "target": "rpm", "arch": ["x64"] }
             ],
             "category": "Utility",
-            "icon": "build/icon.png"
+            "icon": "build/icon.png",
+            "artifactName": "${productName}-${version}.${ext}"
         },
         "win": {
             "target": [
