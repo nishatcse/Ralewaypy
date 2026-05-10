@@ -12,7 +12,8 @@ function getPythonBinaryPath(): string {
     
     // In dev: Use python directly from the backend dir
     if (!isPackaged) {
-        return path.join(__dirname, '../../backend/dist/app');
+        const devPath = path.join(__dirname, '../../backend/dist/app');
+        return process.platform === 'win32' ? devPath + '.exe' : devPath;
     }
     
     // In production: Use the extraResources path
