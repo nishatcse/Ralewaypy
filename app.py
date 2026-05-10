@@ -1,4 +1,4 @@
-import requests, time, jwt, os, asyncio, re, json
+import requests, time, jwt, os, asyncio, re, json, datetime
 import urllib.request, urllib.parse
 import subprocess, shutil, signal
 import websocket
@@ -33,33 +33,50 @@ AUTH_TTL = 120          # Re-read auth from localStorage every 2 min
 TURNSTILE_TTL = 45      # Re-read turnstile token every 45s (they expire)
 
 
+def get_tab_ws_url(pattern, force=False):
+    """Find the WebSocket URL for a tab matching the given pattern."""
+    for attempt in range(5):
+        try:
+            req = urllib.request.Request('http://localhost:9222/json')
+            with urllib.request.urlopen(req, timeout=5) as response:
+                tabs = json.loads(response.read())
+                for tab in tabs:
+                    if tab.get('type') == 'page' and pattern in tab.get('url', ''):
+                        return tab.get('webSocketDebuggerUrl')
+        except:
+            pass
+        if not force: break
+        time.sleep(1)
+    return None
+
+
 def get_ws_url(force=False):
     global _cached_ws_url, _cached_ws_url_time
     now = time.time()
     if not force and _cached_ws_url and (now - _cached_ws_url_time) < WS_URL_TTL:
         return _cached_ws_url
 
-    for attempt in range(5):
-        try:
-            req = urllib.request.Request('http://localhost:9222/json')
-            with urllib.request.urlopen(req, timeout=5) as response:
-                browsers = json.loads(response.read())
-                # Prefer the eticket page
-                for browser in browsers:
-                    if browser.get('type') == 'page' and 'eticket.railway.gov.bd' in browser.get('url', ''):
-                        _cached_ws_url = browser.get('webSocketDebuggerUrl')
-                        _cached_ws_url_time = now
-                        return _cached_ws_url
-                # Fallback to any page
-                for browser in browsers:
-                    if browser.get('type') == 'page':
-                        _cached_ws_url = browser.get('webSocketDebuggerUrl')
-                        _cached_ws_url_time = now
-                        return _cached_ws_url
-        except:
-            pass
-        time.sleep(1)
-    return None
+    url = get_tab_ws_url('eticket.railway.gov.bd', force=force)
+    if not url:
+        url = get_tab_ws_url('', force=force) # Fallback to any page
+    
+    if url:
+        _cached_ws_url = url
+        _cached_ws_url_time = now
+    return url
+
+
+def open_tab(url):
+    """Open a new tab with the given URL via CDP."""
+    try:
+        # Use the /json/new endpoint to open a new tab
+        req = urllib.request.Request(f'http://localhost:9222/json/new?{urllib.parse.quote(url)}')
+        with urllib.request.urlopen(req, timeout=5) as response:
+            tab = json.loads(response.read())
+            return tab.get('webSocketDebuggerUrl')
+    except Exception as e:
+        print(f"{Fore.RED}Failed to open new tab: {e}")
+        return None
 
 
 def exec_js(ws_url, js, await_promise=False, _retries=3):
@@ -802,10 +819,11 @@ def launch_chrome():
                            capture_output=True, timeout=5)
             time.sleep(2)
 
-    # Clean user data for fresh session
-    if os.path.exists(CHROME_USER_DATA):
-        print(f"{Fore.YELLOW}Clearing Chrome user data for clean session...")
-        shutil.rmtree(CHROME_USER_DATA, ignore_errors=True)
+    # Note: We NO LONGER wipe the directory to keep Google Messages logged in.
+    # We clear the Railway session specifically instead.
+    # if os.path.exists(CHROME_USER_DATA):
+    #     print(f"{Fore.YELLOW}Clearing Chrome user data...")
+    #     shutil.rmtree(CHROME_USER_DATA, ignore_errors=True)
 
     # Launch Chrome
     print(f"{Fore.CYAN}Launching Chrome with remote debugging on port {CHROME_DEBUG_PORT}...")
@@ -833,6 +851,85 @@ def launch_chrome():
             return True
     print(f"{Fore.RED}Chrome failed to start within 30s.")
     return False
+
+
+def clear_railway_session():
+    """Clear cookies and storage for the railway site to ensure a fresh login."""
+    ws_url = get_ws_url(force=True)
+    if not ws_url: return
+
+    print(f"{Fore.YELLOW}Clearing Railway session data for fresh login...")
+    exec_js(ws_url, '''(() => {
+        localStorage.clear();
+        sessionStorage.clear();
+        document.cookie.split(";").forEach(function(c) { 
+            document.cookie = c.replace(/^ +/, "").replace(/=.*/, "=;expires=" + new Date().toUTCString() + ";path=/"); 
+        });
+    })()''')
+
+
+def fetch_otp_from_messages():
+    """Automated OTP retrieval from Google Messages Web."""
+    print(f"{Fore.CYAN}Waiting for OTP from Google Messages...")
+    
+    # Try to find existing messages tab
+    msg_ws_url = get_tab_ws_url('messages.google.com')
+    if not msg_ws_url:
+        print(f"{Fore.YELLOW}Google Messages tab not found. Opening it...")
+        msg_ws_url = open_tab('https://messages.google.com/web/')
+        if not msg_ws_url: return None
+        time.sleep(10) # Give it time to load
+
+    # Polling for new OTP
+    start_time = datetime.datetime.now()
+    print(f"{Fore.YELLOW}Polling Google Messages for new OTP (max 2 mins)...")
+    
+    for i in range(24): # 24 * 5s = 120s (2 mins)
+        otp = exec_js(msg_ws_url, '''(() => {
+            try {
+                // 1. Look for conversation list items
+                const convs = document.querySelectorAll('mws-conversation-list-item');
+                let targetConv = null;
+                for (const c of convs) {
+                    const text = c.textContent || '';
+                    if (text.includes('Bangladesh Railway') || text.includes('01969916318') || text.includes('01969-916318')) {
+                        targetConv = c;
+                        break;
+                    }
+                }
+
+                if (targetConv) {
+                    // Click the conversation if it's not selected
+                    if (!targetConv.classList.contains('selected')) {
+                        targetConv.click();
+                    }
+                }
+
+                // 2. Scan all message bubbles for the OTP pattern
+                // (Bangladesh Railway) Your OTP to proceed with ticket purchase is: 1673
+                const messages = document.querySelectorAll('div.message-content, div.text-msg, mws-message-wrapper');
+                let latestOtp = null;
+                
+                for (let j = messages.length - 1; j >= 0; j--) {
+                    const content = messages[j].textContent || '';
+                    const match = content.match(/OTP to proceed with ticket purchase is: (\\d{4})/i);
+                    if (match) {
+                        latestOtp = match[1];
+                        break; 
+                    }
+                }
+                return latestOtp;
+            } catch(e) { return null; }
+        })()''')
+
+        if otp:
+            print(f"{Fore.GREEN}OTP Found: {otp}")
+            return otp
+        
+        time.sleep(5)
+    
+    print(f"{Fore.RED}OTP not found in Google Messages after 2 minutes.")
+    return None
 
 
 def fresh_login():
@@ -940,6 +1037,9 @@ def main():
             print(f"{Fore.RED}Failed to launch Chrome. Exiting.")
             exit()
 
+        # Ensure fresh login by clearing session (but keeping Google Messages login)
+        clear_railway_session()
+
         if not fresh_login():
             print(f"{Fore.RED}Failed to log in automatically. Exiting.")
             exit()
@@ -959,6 +1059,7 @@ def main():
         fetch_trip_details()
 
         reserved_ticket_ids, ticket_id_map = reserve_seat()
+        print(f"{Fore.GREEN}Successfully reserved 1 seats: {', '.join(ticket_id_map.values())}")
 
         otp_payload = {"trip_id": trip_id, "trip_route_id": trip_route_id, "ticket_ids": reserved_ticket_ids}
 
@@ -977,7 +1078,10 @@ def main():
             print(f"{Fore.RED}Failed to send passenger details. Status: {r['s'] if r else 'No response'}")
             return
 
-        otp = input(f"{Fore.YELLOW}Enter the OTP received: ")
+        # --- Automated OTP Retrieval ---
+        otp = fetch_otp_from_messages()
+        if not otp:
+            otp = input(f"{Fore.YELLOW}Enter the OTP received: ")
 
         verify_payload = {**otp_payload, "otp": otp}
         r = api_request("POST", "/v1.0/web/bookings/verify-otp", json_data=verify_payload)
