@@ -13,9 +13,7 @@ Write-Host ""
 
 # Step 1: Build Python sidecar
 Write-Host "Step 1/2: Building Python sidecar..." -ForegroundColor Yellow
-Set-Location "$ScriptDir\backend"
-.\build.ps1
-Set-Location $ScriptDir
+& "$ScriptDir\backend\build.ps1"
 
 # Step 2: Build Electron app
 Write-Host ""

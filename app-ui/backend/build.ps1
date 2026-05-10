@@ -5,7 +5,9 @@ $ErrorActionPreference = "Stop"
 
 # Get the directory of this script
 $ScriptDir = $PSScriptRoot
+if (!$ScriptDir) { $ScriptDir = Get-Location }
 Set-Location $ScriptDir
+Write-Host "Current Directory: $(Get-Location)" -ForegroundColor Gray
 
 # Detect Python command
 $PythonCmd = "python"
