@@ -1,0 +1,55 @@
+name: Build and Release
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build Windows App
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: app-ui/package-lock.json
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: |
+          pip install pyinstaller websocket-client python-dotenv colorama PyJWT requests
+
+      - name: Build Python Sidecar
+        run: |
+          cd app-ui/backend
+          pyinstaller --onefile --name app app.py
+
+      - name: Install Node.js dependencies
+        run: |
+          cd app-ui
+          npm install
+
+      - name: Build and Package Electron App
+        run: |
+          cd app-ui
+          npm run dist:win
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Raleway-Windows-Build
+          path: app-ui/release/*.exe
