@@ -11,12 +11,12 @@ Write-Host "=== Building Python sidecar for Windows ===" -ForegroundColor Cyan
 
 # Step 1: Install dependencies
 Write-Host "Step 1/2: Installing dependencies..." -ForegroundColor Yellow
-pip install pyinstaller websocket-client python-dotenv colorama PyJWT requests
+python -m pip install pyinstaller websocket-client python-dotenv colorama PyJWT requests
 
 # Step 2: Build the executable
 Write-Host "Step 2/2: Running PyInstaller..." -ForegroundColor Yellow
 # --noconsole is often preferred for background sidecars to avoid popping up a cmd window
-pyinstaller --onefile --noconsole --name app app.py
+python -m PyInstaller --onefile --noconsole --name app app.py
 
 Write-Host ""
 Write-Host "=== Build Complete! ===" -ForegroundColor Green
