@@ -7,6 +7,16 @@ $ErrorActionPreference = "Stop"
 $ScriptDir = $PSScriptRoot
 if (!$ScriptDir) { $ScriptDir = Get-Location }
 Set-Location $ScriptDir
+
+# Folder-aware check: if app.py isn't here, look in the backend folder
+if (!(Test-Path "app.py")) {
+    if (Test-Path "backend\app.py") {
+        Write-Host "Jumping into backend folder..." -ForegroundColor Gray
+        Set-Location "backend"
+        $ScriptDir = Get-Location
+    }
+}
+
 Write-Host "Current Directory: $(Get-Location)" -ForegroundColor Gray
 
 # Detect Python command
