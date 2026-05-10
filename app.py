@@ -1,14 +1,10 @@
-import requests, time, jwt, os, aiohttp, asyncio, re
-from concurrent.futures import ThreadPoolExecutor
+import requests, time, jwt, os, asyncio, re, json
+import urllib.request, urllib.parse
+import websocket
 from dotenv import load_dotenv
 from colorama import Fore
 
-# Load environment variables from .env file
 load_dotenv()
-
-# Read values from the environment
-mobile_number = os.getenv("MOBILE_NUMBER")
-password = os.getenv("PASSWORD")
 
 from_city = os.getenv("FROM_CITY")
 to_city = os.getenv("TO_CITY")
@@ -16,214 +12,584 @@ date_of_journey = os.getenv("DATE_OF_JOURNEY")
 seat_class = os.getenv("SEAT_CLASS")
 train_number = int(os.getenv("TRAIN_NUMBER"))
 max_selectable_seat = int(os.getenv("MAX_SELECTABLE_SEAT"))
-
-# Convert the desired seats from a comma-separated string to a list
 desired_seats = os.getenv("DESIRED_SEATS").split(',') if os.getenv("DESIRED_SEATS") else []
+mobile_number = os.getenv("MOBILE_NUMBER")
+password = os.getenv("PASSWORD")
 
-# Function to fetch auth token dynamically
-def fetch_auth_token(mobile_number, password):
-    login_url = "https://railspaapi.shohoz.com/v1.0/app/auth/sign-in"
-    payload = {
-        "mobile_number": mobile_number,
-        "password": password
-    }
+API_BASE = "https://railspaapi.shohoz.com"
+trip_id = trip_route_id = boarding_point_id = train_name = None
 
-    while True:
+# --- Cached state to avoid redundant WebSocket connections ---
+_cached_ws_url = None
+_cached_ws_url_time = 0
+_cached_auth = None
+_cached_auth_time = 0
+_cached_turnstile = None
+_cached_turnstile_time = 0
+
+WS_URL_TTL = 30        # Re-discover Chrome WS URL every 30s
+AUTH_TTL = 120          # Re-read auth from localStorage every 2 min
+TURNSTILE_TTL = 45      # Re-read turnstile token every 45s (they expire)
+
+
+def get_ws_url(force=False):
+    global _cached_ws_url, _cached_ws_url_time
+    now = time.time()
+    if not force and _cached_ws_url and (now - _cached_ws_url_time) < WS_URL_TTL:
+        return _cached_ws_url
+
+    for attempt in range(5):
         try:
-            response = requests.post(login_url, json=payload)
+            req = urllib.request.Request('http://localhost:9222/json')
+            with urllib.request.urlopen(req, timeout=5) as response:
+                browsers = json.loads(response.read())
+                # Prefer the eticket page
+                for browser in browsers:
+                    if browser.get('type') == 'page' and 'eticket.railway.gov.bd' in browser.get('url', ''):
+                        _cached_ws_url = browser.get('webSocketDebuggerUrl')
+                        _cached_ws_url_time = now
+                        return _cached_ws_url
+                # Fallback to any page
+                for browser in browsers:
+                    if browser.get('type') == 'page':
+                        _cached_ws_url = browser.get('webSocketDebuggerUrl')
+                        _cached_ws_url_time = now
+                        return _cached_ws_url
+        except:
+            pass
+        time.sleep(1)
+    return None
 
-            if response.status_code == 200:
-                data = response.json()
-                auth_token = data.get("data", {}).get("token")
-                if auth_token:
-                    print(f"{Fore.GREEN}Authentication successful!")
-                    print(f"{Fore.MAGENTA}Auth Token: {auth_token}")
-                    return auth_token
-                else:
-                    print(f"{Fore.RED}Failed to retrieve token from response.")
-                    return None
-            elif response.status_code in [500, 502, 503, 504]:
-                print(f"{Fore.YELLOW}Server overloaded (HTTP {response.status_code}). Retrying...")
-                time.sleep(1)  # Retry after 1 second
+
+def exec_js(ws_url, js, await_promise=False, _retries=3):
+    for attempt in range(_retries):
+        try:
+            ws = websocket.create_connection(ws_url, timeout=60)
+            params = {"expression": js, "returnByValue": True}
+            if await_promise:
+                params["awaitPromise"] = True
+            ws.send(json.dumps({"id": 1, "method": "Runtime.evaluate", "params": params}))
+            raw = ws.recv()
+            ws.close()
+            result = json.loads(raw)
+            return result.get('result', {}).get('result', {}).get('value')
+        except (ConnectionRefusedError, websocket.WebSocketException, OSError, TimeoutError, ConnectionError) as e:
+            if attempt < _retries - 1:
+                print(f"{Fore.YELLOW}WS connection failed (attempt {attempt+1}/{_retries}): {e}. Re-discovering Chrome...")
+                # Force refresh the WS URL — Chrome may have changed it
+                new_url = get_ws_url(force=True)
+                if new_url:
+                    ws_url = new_url
+                time.sleep(1)
             else:
-                print(f"{Fore.RED}Error: {response.status_code} - {response.text}")
-                return None
+                raise
 
-        except requests.RequestException as e:
-            print(f"{Fore.RED}Exception occurred while fetching auth token: {e}")
-            time.sleep(1)  # Retry after 1 second in case of an exception
 
-# Function to extract user info from token
+def get_turnstile_token(ws_url, force=False):
+    """Get a fresh Turnstile token. These tokens are SINGLE-USE, so we always
+    need a fresh one and must trigger a reset after reading."""
+    global _cached_turnstile, _cached_turnstile_time
+
+    # If we have a cached token that hasn't been used yet, return it
+    if not force and _cached_turnstile and (time.time() - _cached_turnstile_time) < TURNSTILE_TTL:
+        token = _cached_turnstile
+        # Mark as used — next call will need a fresh one
+        _cached_turnstile = None
+        _cached_turnstile_time = 0
+        return token
+
+    # Try to get current token from the page
+    js = '''(() => {
+        const inp = document.querySelector('input[name="cf-turnstile-response"]');
+        const token = inp ? inp.value : null;
+
+        // After reading, trigger Turnstile to generate a new token for next use
+        if (window.turnstile) {
+            try {
+                // Reset all Turnstile widgets to regenerate tokens
+                const widgets = document.querySelectorAll('[id^="cf-turnstile"]');
+                widgets.forEach(w => {
+                    try { turnstile.reset(w.id); } catch(e) {}
+                });
+                // Also try reset without ID (resets first widget)
+                try { turnstile.reset(); } catch(e) {}
+            } catch(e) {}
+        }
+
+        return token;
+    })()'''
+
+    token = exec_js(ws_url, js)
+    if token:
+        return token
+
+    # Token not available — maybe Turnstile hasn't loaded or is regenerating
+    # Wait briefly and try once more
+    time.sleep(2)
+    simple_js = '''(() => {
+        const inp = document.querySelector('input[name="cf-turnstile-response"]');
+        return inp ? inp.value : null;
+    })()'''
+    token = exec_js(ws_url, simple_js)
+    return token
+
+
+def get_auth_headers(ws_url, force=False):
+    global _cached_auth, _cached_auth_time
+    now = time.time()
+    if not force and _cached_auth and (now - _cached_auth_time) < AUTH_TTL:
+        return _cached_auth
+
+    js = '''(() => {
+        const t = localStorage.getItem('token');
+        const u = localStorage.getItem('uudid') || '';
+        const s = localStorage.getItem('ssdk') || '';
+        const uinfo = localStorage.getItem('user');
+        return JSON.stringify({token: t, uudid: u, ssdk: s, user: uinfo});
+    })()'''
+    result = exec_js(ws_url, js)
+    if result:
+        parsed = json.loads(result)
+        if parsed.get('token'):
+            _cached_auth = parsed
+            _cached_auth_time = now
+        return parsed
+    return None
+
+
+def invalidate_turnstile():
+    """Force turnstile token refresh on next API call."""
+    global _cached_turnstile, _cached_turnstile_time
+    _cached_turnstile = None
+    _cached_turnstile_time = 0
+
+
+def api_request(method, path, params=None, json_data=None):
+    ws_url = get_ws_url()
+    if not ws_url:
+        print(f"{Fore.RED}Cannot connect to Chrome. Is it running with --remote-debugging-port=9222?")
+        return None
+
+    headers = get_auth_headers(ws_url)
+    if not headers or not headers.get('token'):
+        print(f"{Fore.RED}No auth token found in Chrome localStorage. Are you logged in?")
+        return None
+
+    if params is None:
+        params = {}
+    cft = get_turnstile_token(ws_url)
+    if cft:
+        params['cft_response'] = cft
+
+    url = f"{API_BASE}{path}?" + urllib.parse.urlencode(params)
+
+    # Escape single quotes in token values for JS string safety
+    token_escaped = headers['token'].replace("'", "\\'")
+    uudid_escaped = headers['uudid'].replace("'", "\\'")
+    ssdk_escaped = headers['ssdk'].replace("'", "\\'")
+
+    # Check if this endpoint needs the X-Action-Token header
+    needs_action_token = any(ep in path for ep in ['reserve-seat', 'release-seat'])
+
+    js = f"""(async () => {{
+        const opts = {{
+            method: '{method}',
+            headers: {{
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+                'Authorization': 'Bearer {token_escaped}',
+                'x-device-id': '{uudid_escaped}',
+                'x-device-key': '{ssdk_escaped}',
+                'x-requested-with': 'XMLHttpRequest'
+            }}
+        }};
+        """
+
+    # Add X-Action-Token header for reserve-seat / release-seat
+    if needs_action_token:
+        js += """
+        const actionToken = sessionStorage.getItem('atk') || '';
+        if (actionToken) {
+            opts.headers['X-Action-Token'] = actionToken;
+        }
+        """
+
+    if json_data:
+        js += f"opts.body = JSON.stringify({json.dumps(json_data)});"
+
+    js += f"""
+        try {{
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 45000);
+            opts.signal = controller.signal;
+            const r = await fetch('{url}', opts);
+            clearTimeout(timeout);
+            const t = await r.text();
+
+            // Capture X-Action-Token from response and store in sessionStorage
+            const actionTokenResp = r.headers.get('X-Action-Token');
+            if (actionTokenResp) {{
+                sessionStorage.setItem('atk', actionTokenResp);
+            }}
+
+            return JSON.stringify({{s: r.status, b: t}});
+        }} catch(e) {{
+            return JSON.stringify({{s: 0, b: e.message}});
+        }}
+    }})()"""
+
+    result = exec_js(ws_url, js, await_promise=True)
+    try:
+        return json.loads(result) if result else None
+    except:
+        return None
+
+
+def auto_login_if_needed(ws_url):
+    """Check if we're on the login page and auto-submit credentials."""
+    # Check current URL
+    current_url = exec_js(ws_url, "location.href")
+    if not current_url or '/login' not in current_url:
+        return  # Not on login page, nothing to do
+
+    print(f"{Fore.YELLOW}Detected login page. Attempting auto-login...")
+
+    # Check if credentials are filled (they're pre-filled from the form)
+    has_inputs = exec_js(ws_url, '''(() => {
+        const inputs = document.querySelectorAll('input[type="text"], input[type="password"], input[type="tel"]');
+        return inputs.length >= 2;
+    })()''')
+
+    if not has_inputs:
+        print(f"{Fore.RED}Login form not found on page.")
+        return
+
+    # Fill credentials from .env if not already filled
+    login_js = f'''(async () => {{
+        // Find and fill the mobile/username field
+        const inputs = document.querySelectorAll('input');
+        let mobileField = null;
+        let passField = null;
+        for (const inp of inputs) {{
+            const t = inp.type.toLowerCase();
+            const n = (inp.name || '').toLowerCase();
+            const p = (inp.placeholder || '').toLowerCase();
+            if ((t === 'tel' || t === 'text' || t === 'number') && !mobileField && (n.includes('mobile') || n.includes('phone') || n.includes('user') || p.includes('mobile') || p.includes('phone') || inp.value.match(/^01/))) {{
+                mobileField = inp;
+            }}
+            if (t === 'password') {{
+                passField = inp;
+            }}
+        }}
+
+        if (!mobileField || !passField) {{
+            return JSON.stringify({{ok: false, msg: 'Cannot find login fields'}});
+        }}
+
+        // Set values using native setter to trigger Angular/React change detection
+        const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+        nativeInputValueSetter.call(mobileField, '{mobile_number}');
+        mobileField.dispatchEvent(new Event('input', {{ bubbles: true }}));
+        mobileField.dispatchEvent(new Event('change', {{ bubbles: true }}));
+
+        nativeInputValueSetter.call(passField, '{password}');
+        passField.dispatchEvent(new Event('input', {{ bubbles: true }}));
+        passField.dispatchEvent(new Event('change', {{ bubbles: true }}));
+
+        // Small delay for framework to process
+        await new Promise(r => setTimeout(r, 500));
+
+        // Find and click the submit button
+        const btns = document.querySelectorAll('button[type="submit"], button.login-btn, button.btn-login, input[type="submit"]');
+        let submitBtn = btns.length > 0 ? btns[0] : null;
+        if (!submitBtn) {{
+            // Fallback: find any button with login text
+            const allBtns = document.querySelectorAll('button');
+            for (const b of allBtns) {{
+                if (b.textContent.toLowerCase().includes('login') || b.textContent.toLowerCase().includes('sign in') || b.textContent.toLowerCase().includes('log in')) {{
+                    submitBtn = b;
+                    break;
+                }}
+            }}
+        }}
+
+        if (submitBtn) {{
+            submitBtn.click();
+            return JSON.stringify({{ok: true, msg: 'Login form submitted'}});
+        }} else {{
+            // Try submitting the form directly
+            const form = document.querySelector('form');
+            if (form) {{
+                form.submit();
+                return JSON.stringify({{ok: true, msg: 'Form submitted directly'}});
+            }}
+            return JSON.stringify({{ok: false, msg: 'No submit button or form found'}});
+        }}
+    }})()'''
+
+    result = exec_js(ws_url, login_js, await_promise=True)
+    if result:
+        try:
+            data = json.loads(result)
+            if data.get('ok'):
+                print(f"{Fore.GREEN}{data['msg']}. Waiting for redirect...")
+            else:
+                print(f"{Fore.RED}Login issue: {data.get('msg')}")
+                return
+        except:
+            print(f"{Fore.YELLOW}Login submitted (raw: {result})")
+
+    # Wait for login to complete — the site may open a new tab or redirect
+    for i in range(30):
+        time.sleep(1)
+
+        # After login, the WS URL may have changed. Re-discover all tabs.
+        new_ws = get_ws_url(force=True)
+
+        # Check ALL page tabs for an eticket page with a token
+        try:
+            req = urllib.request.Request('http://localhost:9222/json')
+            with urllib.request.urlopen(req, timeout=5) as response:
+                all_tabs = json.loads(response.read())
+        except:
+            continue
+
+        for tab in all_tabs:
+            if tab.get('type') != 'page':
+                continue
+            tab_ws = tab.get('webSocketDebuggerUrl')
+            tab_url = tab.get('url', '')
+            if not tab_ws:
+                continue
+
+            # Check if this tab has a token (must be on eticket origin)
+            if 'eticket.railway.gov.bd' in tab_url and '/login' not in tab_url:
+                try:
+                    token = exec_js(tab_ws, "localStorage.getItem('token')")
+                    if token:
+                        print(f"{Fore.GREEN}Login successful! Token found on: {tab_url}")
+                        invalidate_turnstile()
+                        global _cached_auth, _cached_auth_time, _cached_ws_url, _cached_ws_url_time
+                        _cached_auth = None
+                        _cached_auth_time = 0
+                        _cached_ws_url = tab_ws
+                        _cached_ws_url_time = time.time()
+                        return
+                except:
+                    pass
+
+        # If original tab still exists and has left the login page
+        if new_ws:
+            try:
+                cur = exec_js(new_ws, "location.href")
+                if cur and '/login' not in cur:
+                    # Logged in but maybe on newtab — navigate to eticket
+                    print(f"{Fore.YELLOW}Redirected to: {cur}. Navigating to eticket site...")
+                    search_url = f"https://eticket.railway.gov.bd/booking/train/search?fromcity={from_city}&tocity={to_city}&doj={date_of_journey}&class={seat_class}"
+                    exec_js(new_ws, f"location.href = '{search_url}'")
+                    time.sleep(5)  # Wait for navigation and Angular to load
+                    # Re-discover the page
+                    _cached_ws_url = None
+                    _cached_ws_url_time = 0
+                    final_ws = get_ws_url(force=True)
+                    if final_ws:
+                        token = exec_js(final_ws, "localStorage.getItem('token')")
+                        if token:
+                            print(f"{Fore.GREEN}Login successful! Token available.")
+                            invalidate_turnstile()
+                            _cached_auth = None
+                            _cached_auth_time = 0
+                            return
+            except:
+                pass
+
+    print(f"{Fore.RED}Login timed out after 30s. Please log in manually.")
+
+
+def fetch_auth_key():
+    ws_url = get_ws_url()
+    if not ws_url:
+        return None
+
+    # Try to get token first
+    js = "localStorage.getItem('token')"
+    token = exec_js(ws_url, js)
+
+    if not token:
+        # Maybe we're on the login page — try auto-login
+        auto_login_if_needed(ws_url)
+        # Re-fetch after login
+        ws_url = get_ws_url(force=True)
+        if ws_url:
+            token = exec_js(ws_url, js)
+
+    return token
+
+
 def extract_user_info_from_token(auth_key):
     try:
-        # Decode the JWT token without verifying the signature (as secret key is unknown)
-        decoded_token = jwt.decode(auth_key, options={"verify_signature": False}, algorithms=["RS256"])
-
-        # Extract relevant fields
-        user_email = decoded_token.get("email", "")
-        user_phone = decoded_token.get("phone_number", "")
-        user_name = decoded_token.get("display_name", "")
-
-        print(f"{Fore.CYAN}Extracted from token - Email: {user_email}, Phone: {user_phone}, Name: {user_name}")
-
-        return user_email, user_phone, user_name
-
+        decoded = jwt.decode(auth_key, options={"verify_signature": False}, algorithms=["RS256"])
+        print(f"{Fore.CYAN}Extracted from token - Email: {decoded.get('email','')}, Phone: {decoded.get('phone_number','')}, Name: {decoded.get('display_name','')}")
+        return decoded.get("email",""), decoded.get("phone_number",""), decoded.get("display_name","")
     except Exception as e:
         print(f"{Fore.RED}Failed to decode auth token: {e}")
         return None, None, None
 
-# Function to fetch trip details
-def fetch_trip_details(from_city, to_city, date_of_journey, seat_class, train_number):
-    url = "https://railspaapi.shohoz.com/v1.0/app/bookings/search-trips-v2"
-    
-    payload = {
-        "from_city": from_city,
-        "to_city": to_city,
-        "date_of_journey": date_of_journey,
-        "seat_class": seat_class
-    }
 
+def fetch_trip_details():
+    global trip_id, trip_route_id, boarding_point_id, train_name
     print(f"{Fore.YELLOW}Fetching trip details for {from_city} to {to_city} on {date_of_journey}...")
 
     while True:
-        try:
-            response = requests.get(url, headers=headers, params=payload)
+        r = api_request("GET", "/v1.0/web/bookings/search-trips-v2", {"from_city": from_city, "to_city": to_city, "date_of_journey": date_of_journey, "seat_class": seat_class})
 
-            if response.status_code == 200:
-                data = response.json().get("data", {}).get("trains", [])
-
-                if not data:
-                    print(f"{Fore.YELLOW}Trip details not available yet. Retrying in 1 second...")
-                    time.sleep(1)
-                    continue  # Retry if no trips are available
-
-                for train in data:
-                    if train.get("train_model") == str(train_number):  # Match train model with train_number
-                        for seat in train.get("seat_types", []):
-                            if seat.get("type") == seat_class:
-                                trip_id = seat.get("trip_id")
-                                trip_route_id = seat.get("trip_route_id")
-                                boarding_point_id = train.get("boarding_points", [{}])[0].get("trip_point_id", None)
-                                train_name = train.get("trip_number")
-
-                                print(f"{Fore.GREEN}Trip details found! Train: {train_name}, Trip ID: {trip_id}, "
-                                      f"Route ID: {trip_route_id}, Boarding Point ID: {boarding_point_id}")
-
-                                return trip_id, trip_route_id, boarding_point_id, train_name
-
-                print(f"{Fore.YELLOW}Train number {train_number} with seat class {seat_class} not available yet. Retrying in 1 second...")
-                time.sleep(1)  # Retry every 1 second
-
-            elif response.status_code in [500, 502, 503, 504]:
-                print(f"{Fore.YELLOW}Server overloaded (HTTP {response.status_code}). Retrying in 1 second...")
-                time.sleep(1)  # Retry after 1 second
-
-            else:
-                print(f"{Fore.RED}Failed to fetch trip details. HTTP Status: {response.status_code}")
-                print(f"{Fore.CYAN}Server response: {response.text}")
-                time.sleep(1)  # Retry after a delay on other errors
-
-        except requests.RequestException as e:
-            print(f"{Fore.RED}Error during trip details fetch: {e}")
-            time.sleep(1)  # Retry after 1 second in case of an error
-
-# Async function to check seat booking availability
-async def is_booking_available():
-    url = "https://railspaapi.shohoz.com/v1.0/app/bookings/seat-layout"
-    payload = {
-        "trip_id": trip_id,
-        "trip_route_id": trip_route_id
-    }
-
-    MIN_LOOP_INTERVAL = 0.001  # in seconds (1 ms), to avoid spamming too fast
-    connector = aiohttp.TCPConnector(limit=20)  # Keep-Alive for better performance
-
-    async with aiohttp.ClientSession(connector=connector) as session:
-        while True:
-            start_time = time.perf_counter()
+        if r and r.get('s') == 200:
             try:
-                async with session.get(url, headers=headers, json=payload) as response:
-                    end_time = time.perf_counter()
-                    elapsed = end_time - start_time
+                data = json.loads(r['b']).get("data", {}).get("trains", [])
+            except:
+                data = []
+            if not data:
+                print(f"{Fore.YELLOW}Trip details not available yet. Retrying in 1 second...")
+                time.sleep(1)
+                continue
+            for train in data:
+                if train.get("train_model") == str(train_number):
+                    for seat in train.get("seat_types", []):
+                        if seat.get("type") == seat_class:
+                            trip_id = seat.get("trip_id")
+                            trip_route_id = seat.get("trip_route_id")
+                            boarding_point_id = train.get("boarding_points", [{}])[0].get("trip_point_id", None)
+                            train_name = train.get("trip_number")
+                            print(f"{Fore.GREEN}Trip details found! Train: {train_name}, Trip ID: {trip_id}, Route ID: {trip_route_id}, Boarding Point ID: {boarding_point_id}")
+                            return trip_id, trip_route_id, boarding_point_id, train_name
+            print(f"{Fore.YELLOW}Train {train_number} / {seat_class} not available yet. Retrying in 1 second...")
+            time.sleep(1)
+        elif r and r.get('s') in [500, 502, 503, 504]:
+            print(f"{Fore.YELLOW}Server overloaded ({r['s']}). Retrying in 1 second...")
+            time.sleep(1)
+        else:
+            status = r.get('s') if r else 'No response'
+            body = r.get('b', '')[:200] if r else ''
+            print(f"{Fore.RED}Failed to fetch trip details. Status: {status}")
+            if body: print(f"{Fore.CYAN}Server response: {body}")
+            time.sleep(1)
 
-                    if response.status == 200:
-                        data = await response.json()
-                        # If seatLayout is available, return immediately
-                        if "seatLayout" in data.get("data", {}):
-                            print(f"{Fore.GREEN}Booking is now available!")
-                            return data["data"]["seatLayout"]
 
-                    elif response.status in [500, 502, 503, 504]:
-                        print(f"{Fore.YELLOW}Server overloaded (HTTP {response.status}). Retrying...")
+def is_booking_available():
+    consecutive_failures = 0
+    MAX_TRANSIENT_RETRIES = 30  # Give up after 30 consecutive transient 422s
 
-                    elif response.status == 422:
-                        # NEW CODE: Process error details for 422 response
-                        error_data = await response.json()
-                        error_messages = error_data.get("error", {}).get("messages", "")
-                        error_message = ""
-                        error_key = ""
+    while True:
+        r = api_request("GET", "/v1.0/web/bookings/seat-layout", {"trip_id": trip_id, "trip_route_id": trip_route_id})
+        if not r:
+            print(f"{Fore.YELLOW}No response from API. Retrying in 2s...")
+            time.sleep(2)
+            continue
 
-                        if isinstance(error_messages, list):
-                            error_message = error_messages[0]
+        if r['s'] == 200:
+            try:
+                data = json.loads(r['b'])
+                if "seatLayout" in data.get("data", {}):
+                    print(f"{Fore.GREEN}Booking is now available!")
+                    consecutive_failures = 0
+                    return data["data"]["seatLayout"]
+            except:
+                pass
+            # 200 but no seatLayout — may be loading
+            print(f"{Fore.YELLOW}Got 200 but no seatLayout in response. Retrying in 2s...")
+            time.sleep(2)
+            continue
 
-                        elif isinstance(error_messages, dict):
-                            error_message = error_messages.get("message", "")
-                            error_key = error_messages.get("errorKey", "")
+        elif r['s'] == 422:
+            try:
+                error_data = json.loads(r['b'])
+                error_messages = error_data.get("error", {}).get("messages", "")
+                error_message = error_messages.get("message", "") if isinstance(error_messages, dict) else (error_messages[0] if isinstance(error_messages, list) and error_messages else str(error_messages))
+                error_key = error_messages.get("errorKey", "") if isinstance(error_messages, dict) else ""
 
-                        else:
-                            error_message = "Unknown error."
+                # --- FATAL: Order limit exceeded (won't fix itself) ---
+                if error_key == "OrderLimitExceeded":
+                    print(f"{Fore.RED}FATAL: You have reached the maximum ticket booking limit.")
+                    exit()
 
-                        # Print the server response
-                        print(f"{Fore.CYAN}Server response: {error_data}")
+                # --- RETRYABLE: Turnstile token issues (single-use, needs regeneration) ---
+                if error_key in ("TURNSTILE_TOKEN_REQUIRED", "TURNSTILE_VERIFICATION_FAILED"):
+                    print(f"{Fore.YELLOW}Turnstile token expired/invalid. Waiting for new token...")
+                    invalidate_turnstile()
+                    # Wait for Turnstile widget to regenerate a fresh token
+                    time.sleep(3)
+                    # Don't count this as a failure — it's expected with single-use tokens
+                    continue
 
-                        # Retry ONLY IF the message contains "ticket purchase for this trip will be available"
-                        if "ticket purchase for this trip will be available" in error_message:
-                            print(f"{Fore.YELLOW}Booking is not open yet: {error_message}. Retrying until available...")
-                            await asyncio.sleep(MIN_LOOP_INTERVAL)  # Retry after 1 ms
-                            continue  # Go back to the loop
+                # --- RETRYABLE: Booking window not open yet ---
+                if "ticket purchase for this trip will be available" in error_message:
+                    print(f"{Fore.YELLOW}Booking not open yet: {error_message}. Retrying in 2s...")
+                    time.sleep(2)
+                    consecutive_failures = 0
+                    continue
 
-                        # If error key indicates OrderLimitExceeded, show a short message.
-                        if error_key == "OrderLimitExceeded":
-                            print(f"{Fore.RED}Error: You have reached the maximum ticket booking limit for {from_city} to {to_city} on {date_of_journey} for {train_name}. Please try booking again on a different day, or consider changing the train number, origin station, or destination.")
-                        else:
-                            # For other messages like ongoing purchase process or multiple order attempts,
-                            # attempt to extract the wait time from the message and calculate the retry time.
-                            time_match = re.search(r"(\d+)\s*minute[s]?\s*(\d+)\s*second[s]?", error_message, re.IGNORECASE)
-                            if time_match:
-                                minutes = int(time_match.group(1))
-                                seconds = int(time_match.group(2))
-                                total_seconds = minutes * 60 + seconds
+                # --- RETRYABLE with wait: Server gives a cooldown time ---
+                time_match = re.search(r"(\d+)\s*minute[s]?\s*(\d+)\s*second[s]?", error_message, re.IGNORECASE)
+                if time_match:
+                    total_wait = int(time_match.group(1)) * 60 + int(time_match.group(2))
+                    future = time.strftime("%I:%M:%S %p", time.localtime(time.time() + total_wait))
+                    print(f"{Fore.YELLOW}Rate limited: {error_message}. Waiting {total_wait}s until {future}...")
+                    # Wait the specified time, then retry (don't exit!)
+                    time.sleep(min(total_wait + 1, 600))  # Cap at 10 min
+                    invalidate_turnstile()  # Refresh turnstile after waiting
+                    consecutive_failures = 0
+                    continue
 
-                                current_time_formatted = time.strftime("%I:%M:%S %p", time.localtime())
-                                future_time_formatted = time.strftime("%I:%M:%S %p", time.localtime(time.time() + total_seconds))
+                # --- RETRYABLE: Any other 422 (transient error) ---
+                consecutive_failures += 1
+                backoff = min(2 * consecutive_failures, 30)  # 2s, 4s, 6s, ... up to 30s
+                print(f"{Fore.YELLOW}422 error (attempt {consecutive_failures}/{MAX_TRANSIENT_RETRIES}): {error_message}")
+                print(f"{Fore.CYAN}Full 422 body: {r['b'][:500]}")
 
-                                print(f"{Fore.RED}Error: {error_message} Current system time is {current_time_formatted}. Please try again after {future_time_formatted}.")
-                            else:
-                                print(f"{Fore.YELLOW}{error_message} Please try again later.")
+                if consecutive_failures >= MAX_TRANSIENT_RETRIES:
+                    print(f"{Fore.RED}Too many consecutive 422 errors. Giving up.")
+                    exit()
 
-                        # Stop further processing in these cases.
-                        exit()
-                    else:
-                        print(f"{Fore.RED}Failed to check booking availability. HTTP Status: {response.status}")
-                        text_resp = await response.text()
-                        print(f"{Fore.CYAN}Server response: {text_resp}")
-                        
-            except aiohttp.ClientError as e:
-                end_time = time.perf_counter()
-                elapsed = end_time - start_time
-                print(f"{Fore.RED}An error occurred while checking booking availability: {e}")
+                # Refresh turnstile token — stale token is a common cause
+                invalidate_turnstile()
+                print(f"{Fore.YELLOW}Refreshing turnstile token and retrying in {backoff}s...")
+                time.sleep(backoff)
+                continue
 
-            # Enforce a 1 ms minimum gap between loop starts
-            if elapsed < MIN_LOOP_INTERVAL:
-                await asyncio.sleep(MIN_LOOP_INTERVAL - elapsed)
+            except json.JSONDecodeError:
+                consecutive_failures += 1
+                print(f"{Fore.RED}422 response not valid JSON: {r['b'][:300]}")
+                invalidate_turnstile()
+                time.sleep(5)
+                continue
 
-# Function to get ticket IDs from layout
+            except Exception as e:
+                consecutive_failures += 1
+                print(f"{Fore.RED}Error parsing 422 response: {e}")
+                print(f"{Fore.CYAN}Raw body: {r['b'][:300]}")
+                invalidate_turnstile()
+                time.sleep(5)
+                continue
+
+        elif r['s'] in [500, 502, 503, 504]:
+            print(f"{Fore.YELLOW}Server error ({r['s']}). Retrying in 3s...")
+            time.sleep(3)
+
+        elif r['s'] == 403:
+            print(f"{Fore.RED}403 Forbidden — likely Cloudflare/Turnstile block. Refreshing tokens...")
+            print(f"{Fore.CYAN}Body: {r['b'][:300]}")
+            invalidate_turnstile()
+            time.sleep(5)
+
+        else:
+            print(f"{Fore.RED}Unexpected HTTP {r['s']}. Retrying in 3s...")
+            print(f"{Fore.CYAN}Body: {r['b'][:300]}")
+            time.sleep(3)
+
+
 def get_ticket_ids_from_layout(seat_layout, desired_seats, max_selectable_seat):
     selected_seat_details = {}
-
-    # Case 1: If desired seats are provided (at least one seat)
     if desired_seats:
-        # Step 1: Select user-defined desired seats first, ensuring they are available
         for coach in seat_layout:
             for row in coach["layout"]:
                 for seat in row:
@@ -231,468 +597,248 @@ def get_ticket_ids_from_layout(seat_layout, desired_seats, max_selectable_seat):
                         selected_seat_details[seat["ticket_id"]] = seat["seat_number"]
                         if len(selected_seat_details) == max_selectable_seat:
                             return selected_seat_details
-
-        # Step 2: Fill the remaining seats by checking nearby available ones
         for coach in seat_layout:
             for row in coach["layout"]:
                 seat_numbers = [seat for seat in row if seat["seat_availability"] == 1]
-
                 for desired_seat in desired_seats:
                     nearby_seats = [s for s in seat_numbers if s["seat_number"] == desired_seat]
-
                     if nearby_seats:
                         desired_index = seat_numbers.index(nearby_seats[0])
-                        # Check forward and backward for nearest available seats
                         for offset in range(1, len(seat_numbers)):
-                            # Look forward
                             if desired_index + offset < len(seat_numbers):
                                 seat = seat_numbers[desired_index + offset]
                                 if seat['seat_availability'] == 1 and seat['seat_number'] not in selected_seat_details.values():
                                     selected_seat_details[seat['ticket_id']] = seat['seat_number']
-                                    if len(selected_seat_details) == max_selectable_seat:
-                                        return selected_seat_details
-
-                            # Look backward
+                                    if len(selected_seat_details) == max_selectable_seat: return selected_seat_details
                             if desired_index - offset >= 0:
                                 seat = seat_numbers[desired_index - offset]
                                 if seat['seat_availability'] == 1 and seat['seat_number'] not in selected_seat_details.values():
                                     selected_seat_details[seat['ticket_id']] = seat['seat_number']
-                                    if len(selected_seat_details) == max_selectable_seat:
-                                        return selected_seat_details
+                                    if len(selected_seat_details) == max_selectable_seat: return selected_seat_details
+        for coach in seat_layout:
+            for row in coach["layout"]:
+                for seat in row:
+                    if seat["seat_availability"] == 1 and seat["seat_number"] not in selected_seat_details.values():
+                        selected_seat_details[seat["ticket_id"]] = seat["seat_number"]
+                        if len(selected_seat_details) == max_selectable_seat: return selected_seat_details
 
-    # Step 3: If not enough seats found, fill remaining seats arbitrarily
-    for coach in seat_layout:
-        for row in coach["layout"]:
-            for seat in row:
-                if seat["seat_availability"] == 1 and seat["seat_number"] not in selected_seat_details.values():
-                    selected_seat_details[seat["ticket_id"]] = seat["seat_number"]
-                    if len(selected_seat_details) == max_selectable_seat:
-                        return selected_seat_details
-
-    # Case 2: When desired_seats is empty, apply the new seat selection algorithm
-    selected_seats = []
-    
-    # Initialize variables needed for the algorithm
     all_available_seats = []
-    coach_selected_seats = []  # Initialize this outside the conditional blocks
-    seats = []  # Initialize seats to avoid undefined variable errors
-    
-    # Gather all available seats across coaches
     for coach in seat_layout:
-        coach_data = {
-            "coach": coach.get("coach_name", "Unknown"),
-            "seats": []
-        }
-        
+        coach_data = {"coach": coach.get("coach_name", "Unknown"), "seats": []}
         for row in coach["layout"]:
             for seat in row:
                 if seat["seat_availability"] == 1:
                     coach_data["seats"].append(seat)
-        
         if coach_data["seats"]:
             all_available_seats.append(coach_data)
-    
-    # Select seats from the first coach with available seats
+
     if all_available_seats:
         seats = all_available_seats[0]["seats"]
-        right = 0  # Initialize right index
-        
-        if right < len(seats) and len(selected_seats) < max_selectable_seat:
-            coach_selected_seats.append(seats[right])
-            selected_seats.append(seats[right])
-            right += 1
+        if 0 < len(seats):
+            selected_seat_details[seats[0]["ticket_id"]] = seats[0]["seat_number"]
+            if len(selected_seat_details) == max_selectable_seat: return selected_seat_details
 
-    if coach_selected_seats:
-        for seat in coach_selected_seats:
-            selected_seat_details[seat["ticket_id"]] = seat["seat_number"]
-            if len(selected_seat_details) == max_selectable_seat:
-                return selected_seat_details
-
-    # Step 4: Multi-coach fallback if necessary
-    if len(selected_seats) < max_selectable_seat:
+    if len(selected_seat_details) < max_selectable_seat:
         for coach_data in all_available_seats:
-            if len(selected_seats) >= max_selectable_seat:
-                break
-
-            coach_name = coach_data["coach"]
-            seats = coach_data["seats"]
-
-            for seat in seats:
-                if len(selected_seats) >= max_selectable_seat:
-                    break
-                if seat not in selected_seat_details.values():
+            for seat in coach_data["seats"]:
+                if len(selected_seat_details) >= max_selectable_seat: break
+                if seat["ticket_id"] not in selected_seat_details:
                     selected_seat_details[seat["ticket_id"]] = seat["seat_number"]
-                    selected_seats.append(seat)
 
-    # Return the seats found even if they are fewer than max_selectable_seat
     if selected_seat_details:
-        print(f"{Fore.YELLOW}Warning: Proceeding with {len(selected_seat_details)} seats instead of {max_selectable_seat}")
+        if len(selected_seat_details) < max_selectable_seat:
+            print(f"{Fore.YELLOW}Warning: Proceeding with {len(selected_seat_details)} seats instead of {max_selectable_seat}")
         return selected_seat_details
-
     print(f"{Fore.RED}No seats available to proceed.")
     return None
 
-# Handling multiple tickets for confirm payload
-def prepare_confirm_payload(otp):
-    user_email, user_phone, user_name = extract_user_info_from_token(auth_key)
-    # Prepare passenger details dynamically based on the number of tickets
-    if len(ticket_ids) > 1:
-        passenger_names = [user_name]  # Start with the first user
-        for i in range(1, len(ticket_ids)):
-            passenger_name = input(f"{Fore.YELLOW}Enter passenger {i + 1} name: ")
-            passenger_names.append(passenger_name)
 
-        confirm_payload = {
-            "is_bkash_online": True,
-            "boarding_point_id": boarding_point_id,
-            "from_city": from_city,
-            "to_city": to_city,
-            "date_of_journey": date_of_journey,
-            "seat_class": seat_class,
-            "passengerType": ["Adult"] * len(ticket_ids),
-            "gender": ["Male"] * len(ticket_ids),
-            "pname": passenger_names,
-            "pmobile": user_phone,
-            "pemail": user_email,
-            "trip_id": trip_id,
-            "trip_route_id": trip_route_id,
-            "ticket_ids": ticket_ids,
-            "contactperson": 0,
-            "otp": otp,
-            "selected_mobile_transaction": 1
-        }
-    else:
-        confirm_payload = {
-            "is_bkash_online": True,
-            "boarding_point_id": boarding_point_id,
-            "from_city": from_city,
-            "to_city": to_city,
-            "date_of_journey": date_of_journey,
-            "seat_class": seat_class,
-            "passengerType": ["Adult"],
-            "gender": ["Male"],
-            "pname": [user_name],
-            "pmobile": user_phone,
-            "pemail": user_email,
-            "trip_id": trip_id,
-            "trip_route_id": trip_route_id,
-            "ticket_ids": ticket_ids,
-            "contactperson": 0,
-            "otp": otp,
-            "selected_mobile_transaction": 1
-        }
-
-    return confirm_payload
-
-
-# Step 1: Reserve Seats for all ticket IDs sequentially
 def reserve_seat():
-    global ticket_ids  # Declare global before using the variable
-
+    global trip_id, trip_route_id, boarding_point_id, train_name
     print(f"{Fore.YELLOW}Waiting for seat layout availability...")
 
-    while True:  # Keep retrying until at least one seat is reserved
-        # Check for seat layout availability
-        seat_layout = asyncio.run(is_booking_available())
-
+    while True:
+        seat_layout = is_booking_available()
         if not seat_layout:
-            print(f"{Fore.RED}Seat layout could not be retrieved. Retrying...")
-            time.sleep(1)  # Retry after 1 second
+            print(f"{Fore.RED}Seat layout could not be retrieved. Retrying in 2s...")
+            time.sleep(2)
             continue
+
+        # Log total available seats for diagnostics
+        total_available = 0
+        for coach in seat_layout:
+            for row in coach.get("layout", []):
+                for seat in row:
+                    if seat.get("seat_availability") == 1:
+                        total_available += 1
+        print(f"{Fore.CYAN}Total available seats in layout: {total_available}")
 
         ticket_id_map = get_ticket_ids_from_layout(seat_layout, desired_seats, max_selectable_seat)
-
         if not ticket_id_map:
-            print(f"{Fore.RED}No matching seats found based on desired preferences. Retrying...")
-            time.sleep(1)  # Retry after 1 second
+            print(f"{Fore.RED}No matching seats found. Retrying in 2s...")
+            time.sleep(2)
             continue
 
-        # Prepare ticket_ids list and seat mapping for display
         ticket_ids = list(ticket_id_map.keys())
-        print(f"{Fore.GREEN}Seats matched! Details: {', '.join([f'{ticket_id_map[ticket]} (Ticket ID: {ticket})' for ticket in ticket_ids])}")
+        print(f"{Fore.GREEN}Seats matched! {', '.join([f'{ticket_id_map[t]} (ID: {t})' for t in ticket_ids])}")
 
-        successful_ticket_ids = []
-
-        def reserve_single_seat(ticket):
-            url = f"https://railspaapi.shohoz.com/v1.0/app/bookings/reserve-seat"
-            params = {
-                "ticket_id": ticket,
-                "route_id": trip_route_id
-            }
-
-            print(f"{Fore.CYAN}Attempting to reserve Seat {ticket_id_map[ticket]} (Ticket ID: {ticket})...")
-
-            while True:
-                try:
-                    response = requests.patch(url, headers=headers, json=params)
-                    print(f"{Fore.CYAN}Response from Reserve Seat API for Seat {ticket_id_map[ticket]} (Ticket ID: {ticket}): {response.text}")
-
-                    if response.status_code == 200:
-                        data = response.json()
-
-                        if data["data"].get("ack") == 1:  # Success is indicated by "ack": 1
-                            print(f"{Fore.GREEN}Seat {ticket_id_map[ticket]} (Ticket ID: {ticket}) reserved successfully!")
-                            return True
-                        else:
-                            print(f"{Fore.RED}Failed to reserve seat {ticket_id_map[ticket]} (Ticket ID: {ticket}): {data}")
-                            return False
-
-                    elif response.status_code == 422:
-                        error_data = response.json()
-                        error_msg = error_data.get("error", {}).get("messages", {}).get("error_msg", "")
-
-                        if "Sorry! this ticket is not available now." in error_msg:
-                            print(f"{Fore.RED}Seat {ticket_id_map[ticket]} (Ticket ID: {ticket}) is not available now. Skipping retry.")
-                            return False
-
-                    elif response.status_code in [500, 502, 503, 504]:
-                        print(f"{Fore.YELLOW}Server overloaded (HTTP {response.status_code}). Retrying in 100 milliseconds...")
-                        time.sleep(0.1)  # Retry after 100 milliseconds
-
-                    else:
-                        print(f"{Fore.RED}Error: {response.status_code} - {response.text}")
-                        return False
-
-                except Exception as e:
-                    print(f"{Fore.RED}Exception occurred while reserving seat {ticket_id_map[ticket]} (Ticket ID: {ticket}): {e}")
-                    time.sleep(0.1)  # Retry after 100 milliseconds in case of an exception
-
-        # Reserve seats sequentially
+        successful = []
         for ticket in ticket_ids:
-            if len(successful_ticket_ids) >= max_selectable_seat:
-                break  # Stop if the limit is reached
-
-            if reserve_single_seat(ticket):
-                successful_ticket_ids.append(ticket)
+            if len(successful) >= max_selectable_seat: break
+            print(f"{Fore.CYAN}Reserving Seat {ticket_id_map[ticket]} (ID: {ticket})...")
+            r = api_request("PATCH", "/v1.0/web/bookings/reserve-seat", json_data={"ticket_id": ticket, "route_id": trip_route_id})
+            if r and r['s'] == 200:
+                try:
+                    if json.loads(r['b'])["data"].get("ack") == 1:
+                        print(f"{Fore.GREEN}Seat {ticket_id_map[ticket]} reserved!")
+                        successful.append(ticket)
+                        continue
+                except:
+                    pass
+                print(f"{Fore.RED}Failed to reserve seat {ticket_id_map[ticket]}: {r['b'][:200]}")
+            elif r and r['s'] == 422:
+                body = r.get('b', '')[:300]
+                print(f"{Fore.RED}Seat {ticket_id_map[ticket]} not available (422): {body}")
             else:
-                print(f"{Fore.RED}Skipping seat {ticket_id_map[ticket]} due to unavailability.")
+                status = r['s'] if r else 'No response'
+                print(f"{Fore.RED}Error: {status} - {r.get('b','')[:200] if r else ''}")
 
-        if successful_ticket_ids:
-            global reserved_ticket_ids
-            reserved_ticket_ids = successful_ticket_ids
-            print(f"{Fore.GREEN}Successfully reserved {len(successful_ticket_ids)} seats: {', '.join([ticket_id_map[ticket] for ticket in successful_ticket_ids])}")
-            return True
+        if successful:
+            print(f"{Fore.GREEN}Successfully reserved {len(successful)} seats: {', '.join([ticket_id_map[t] for t in successful])}")
+            return successful, ticket_id_map
         else:
-            print(f"{Fore.RED}No seats could be reserved. Retrying...")
-            time.sleep(1)  # Retry after 1 second
+            print(f"{Fore.RED}No seats could be reserved. Re-fetching seat layout in 2s...")
+            invalidate_turnstile()  # Refresh in case turnstile expired during attempts
+            time.sleep(2)
 
-# Step 2: Send Passenger Details and Get OTP
-def send_passenger_details():
-    url = "https://railspaapi.shohoz.com/v1.0/app/bookings/passenger-details"
-    payload = {
-        "trip_id": trip_id,
-        "trip_route_id": trip_route_id,
-        "ticket_ids": ticket_ids
-    }
 
-    while True:
-        try:
-            response = requests.post(url, headers=headers, json=payload)
-            print(f"{Fore.CYAN}Response from Passenger Details API: {response.text}")
+def ensure_on_search_page():
+    """Navigate Chrome to the search page so the Turnstile widget loads.
+    The turnstile input only exists on certain pages (search, booking), not the homepage."""
+    ws_url = get_ws_url()
+    if not ws_url:
+        return
 
-            if response.status_code == 200:
-                data = response.json()
+    current = exec_js(ws_url, "location.href")
+    if current and '/booking/train/search' in current:
+        print(f"{Fore.GREEN}Browser already on search page.")
+        return
 
-                if data["data"]["success"]:
-                    print(f"{Fore.GREEN}OTP sent successfully!")
-                    return True
+    search_url = f"https://eticket.railway.gov.bd/booking/train/search?fromcity={from_city}&tocity={to_city}&doj={date_of_journey}&class={seat_class}"
+    print(f"{Fore.YELLOW}Navigating browser to search page (needed for Turnstile token)...")
+    exec_js(ws_url, f"location.href = '{search_url}'")
 
-                else:
-                    print(f"{Fore.RED}Failed to send OTP: {data}")
-                    return False
-
-            elif response.status_code in [500, 502, 503, 504]:
-                print(f"{Fore.YELLOW}Server overloaded (HTTP {response.status_code}). Retrying in 1 second...")
-                time.sleep(1)  # Retry after 1 second
-
-            else:
-                print(f"{Fore.RED}Error: {response.status_code} - {response.text}")
-                return False
-
-        except requests.RequestException as e:
-            print(f"{Fore.RED}Exception occurred while sending passenger details: {e}")
-            time.sleep(1)  # Retry after 1 second in case of an exception
-
-# Step 3: Verify OTP and Confirm Booking
-def verify_and_confirm_booking(otp):
-    # Step 3.1: Verify OTP
-    verify_url = "https://railspaapi.shohoz.com/v1.0/app/bookings/verify-otp"
-    verify_payload = {
-        "trip_id": trip_id,
-        "trip_route_id": trip_route_id,
-        "ticket_ids": ticket_ids,
-        "otp": otp
-    }
-
-    try:
-        while True:
-            response = requests.post(verify_url, headers=headers, json=verify_payload)
-            print(f"{Fore.CYAN}Response from OTP Verification API: {response.text}")
-
-            if response.status_code == 200:
-                data = response.json()
-
-                if not data["data"]["success"]:
-                    print(f"{Fore.RED}Failed to verify OTP: {data}")
-                    return False
-
-                print(f"{Fore.GREEN}OTP verified successfully!")
-                break
-
-            elif response.status_code in [500, 502, 503, 504]:
-                print(f"{Fore.YELLOW}Server overloaded (HTTP {response.status_code}). Retrying in 1 second.")
-                time.sleep(1)
-
-            elif response.status_code == 422:
-                data = response.json()
-                error_message = data.get("error", {}).get("messages", {}).get("message", "Unknown error")
-                error_key = data.get("error", {}).get("messages", {}).get("errorKey", "Unknown errorKey")
-                print(f"{Fore.RED}Error: {error_message} (ErrorKey: {error_key})")
-                if error_key == "OtpNotVerified":
-                    otp = input(f"{Fore.YELLOW}The OTP does not match. Please enter the correct OTP: ")
-                    verify_payload["otp"] = otp
-                else:
-                    return False
-            else:
-                print(f"{Fore.RED}Error: {response.status_code} - {response.text}")
-                return False
-
-    except Exception as e:
-        print(f"{Fore.RED}Exception occurred: {e}")
+    # Wait for page load and turnstile widget to initialize
+    for i in range(20):
         time.sleep(1)
-        return False
-
-    # Step 3.2: Confirm Booking
-    confirm_url = "https://railspaapi.shohoz.com/v1.0/app/bookings/confirm"
-
-    confirm_payload = prepare_confirm_payload(otp)
-
-    # Payment method selection prompt
-    print(f"{Fore.CYAN}Select Payment Method:")
-    print(f"1. Bkash\n2. Nagad\n3. Rocket\n4. Upay\n5. VISA\n6. Mastercard\n7. DBBL Nexus")
-
-    while True:
-        payment_choice = input(f"{Fore.YELLOW}Enter the number corresponding to your payment method: ")
-        if payment_choice == "1":  # bkash (default)
-            print(f"{Fore.GREEN}Payment Method Selected: bKash")
-            break
-
-        elif payment_choice == "2":  # Nagad
-            confirm_payload["is_bkash_online"] = False
-            confirm_payload["selected_mobile_transaction"] = 3
-            print(f"{Fore.GREEN}Payment Method Selected: Nagad")
-            break
-
-        elif payment_choice == "3":  # Rocket
-            confirm_payload["is_bkash_online"] = False
-            confirm_payload["selected_mobile_transaction"] = 4
-            print(f"{Fore.GREEN}Payment Method Selected: Rocket")
-            break
-
-        elif payment_choice == "4":  # Upay
-            confirm_payload["is_bkash_online"] = False
-            confirm_payload["selected_mobile_transaction"] = 5
-            print(f"{Fore.GREEN}Payment Method Selected: Upay")
-            break
-
-        elif payment_choice == "5":  # VISA
-            confirm_payload["is_bkash_online"] = False
-            confirm_payload.pop("selected_mobile_transaction", None)
-            confirm_payload["pg"] = "visa"
-            print(f"{Fore.GREEN}Payment Method Selected: VISA")
-            break
-
-        elif payment_choice == "6":  # Mastercard
-            confirm_payload["is_bkash_online"] = False
-            confirm_payload.pop("selected_mobile_transaction", None)
-            confirm_payload["pg"] = "mastercard"
-            print(f"{Fore.GREEN}Payment Method Selected: Mastercard")
-            break
-
-        elif payment_choice == "7":  # DBBL Nexus
-            confirm_payload["is_bkash_online"] = False
-            confirm_payload.pop("selected_mobile_transaction", None)
-            confirm_payload["pg"] = "nexus"
-            print(f"{Fore.GREEN}Payment Method Selected: DBBL Nexus")
-            break
-    else:
-        print(f"{Fore.RED}Invalid selection! Please enter a number between 1 and 7.")
-
-    while True:
         try:
-            response = requests.patch(confirm_url, headers=headers, json=confirm_payload)
-            print(f"{Fore.CYAN}Response from Confirm Booking API: {response.text}")
+            ws_url = get_ws_url(force=True)
+            if not ws_url:
+                continue
+            token = exec_js(ws_url, '''(() => {
+                const inp = document.querySelector('input[name="cf-turnstile-response"]');
+                return inp ? inp.value : null;
+            })()''')
+            if token:
+                print(f"{Fore.GREEN}Turnstile token ready!")
+                invalidate_turnstile()  # Force cache refresh with the new token
+                return
+        except:
+            pass
 
-            if response.status_code == 200:
-                data = response.json()
+    print(f"{Fore.YELLOW}Turnstile widget may not have loaded. Continuing anyway...")
 
-                if "redirectUrl" in data["data"]:
-                    redirect_url = data["data"]["redirectUrl"]
+
+def main():
+    global trip_id, trip_route_id, boarding_point_id, train_name
+    try:
+        print(f"{Fore.CYAN}Starting ticket booking process...")
+        auth_key = fetch_auth_key()
+        if not auth_key:
+            print(f"{Fore.RED}Failed to fetch auth token. Make sure Chrome is running with --remote-debugging-port=9222 and you're logged in at eticket.railway.gov.bd")
+            exit()
+
+        print(f"{Fore.GREEN}Auth token obtained successfully!")
+
+        _, _, user_name = extract_user_info_from_token(auth_key)
+
+        # Navigate to search page so Turnstile token is available
+        ensure_on_search_page()
+
+        fetch_trip_details()
+
+        reserved_ticket_ids, ticket_id_map = reserve_seat()
+
+        otp_payload = {"trip_id": trip_id, "trip_route_id": trip_route_id, "ticket_ids": reserved_ticket_ids}
+
+        r = api_request("POST", "/v1.0/web/bookings/passenger-details", json_data=otp_payload)
+        if r and r['s'] == 200:
+            try:
+                if json.loads(r['b'])["data"]["success"]:
+                    print(f"{Fore.GREEN}OTP sent successfully!")
+                else:
+                    print(f"{Fore.RED}Failed to send OTP: {r['b'][:200]}")
+                    return
+            except:
+                print(f"{Fore.RED}Failed to parse OTP response: {r['b'][:200]}")
+                return
+        else:
+            print(f"{Fore.RED}Failed to send passenger details. Status: {r['s'] if r else 'No response'}")
+            return
+
+        otp = input(f"{Fore.YELLOW}Enter the OTP received: ")
+
+        verify_payload = {**otp_payload, "otp": otp}
+        r = api_request("POST", "/v1.0/web/bookings/verify-otp", json_data=verify_payload)
+        if not r or r['s'] != 200:
+            print(f"{Fore.RED}Failed to verify OTP.")
+            return
+
+        print(f"{Fore.GREEN}OTP verified successfully!")
+
+        confirm_payload = {
+            "is_bkash_online": True, "boarding_point_id": boarding_point_id,
+            "from_city": from_city, "to_city": to_city, "date_of_journey": date_of_journey,
+            "seat_class": seat_class, "passengerType": ["Adult"] * len(reserved_ticket_ids),
+            "gender": ["Male"] * len(reserved_ticket_ids), "pname": [user_name] * len(reserved_ticket_ids),
+            "pmobile": "01767088288", "pemail": "a.a.mamun595@gmail.com",
+            "trip_id": trip_id, "trip_route_id": trip_route_id, "ticket_ids": reserved_ticket_ids,
+            "contactperson": 0, "otp": otp, "selected_mobile_transaction": 1
+        }
+
+        print(f"{Fore.CYAN}Select Payment Method:\n1. Bkash\n2. Nagad\n3. Rocket\n4. Upay\n5. VISA\n6. Mastercard\n7. DBBL Nexus")
+        choice = input(f"{Fore.YELLOW}Enter choice (1-7): ")
+        pm = {"2": (False, 3), "3": (False, 4), "4": (False, 5), "5": (False, "visa"), "6": (False, "mastercard"), "7": (False, "nexus")}
+        if choice in pm:
+            confirm_payload["is_bkash_online"] = pm[choice][0]
+            if isinstance(pm[choice][1], str):
+                confirm_payload.pop("selected_mobile_transaction", None)
+                confirm_payload["pg"] = pm[choice][1]
+            else:
+                confirm_payload["selected_mobile_transaction"] = pm[choice][1]
+
+        r = api_request("PATCH", "/v1.0/web/bookings/confirm", json_data=confirm_payload)
+        if r and r['s'] == 200:
+            try:
+                data = json.loads(r['b'])
+                if "redirectUrl" in data.get("data", {}):
+                    url = data["data"]["redirectUrl"]
                     print(f"\n{Fore.GREEN}{'='*50}")
                     print(f"{Fore.GREEN}Booking confirmed successfully!")
-                    print(f"{Fore.YELLOW}IMPORTANT: Please note that this payment link can be used ONLY ONCE.")
-                    print(f"{Fore.BLUE}Payment URL: {redirect_url}")
+                    print(f"{Fore.YELLOW}IMPORTANT: This payment link can be used ONLY ONCE.")
+                    print(f"{Fore.BLUE}Payment URL: {url}")
                     print(f"{Fore.GREEN}{'='*50}\n")
-
-                    return True  # Ensure successful return
-
                 else:
-                    print(f"{Fore.RED}Failed to confirm booking: {data}")
-                    return False
-
-            elif response.status_code in [500, 502, 503, 504]:
-                print(f"{Fore.YELLOW}Server overloaded (HTTP {response.status_code}). Retrying in 1 second...")
-                time.sleep(1)
-
-            else:
-                print(f"{Fore.RED}Error: {response.status_code} - {response.text}")
-                return False
-
-        except requests.RequestException as e:
-            print(f"{Fore.RED}Exception occurred while confirming booking: {e}")
-            time.sleep(1)
-            return False
-
-# Main Execution Flow
-try:
-    print(f"{Fore.CYAN}Starting ticket booking process...")
-
-    # Step 1: Authenticate user and fetch authorization token
-    auth_key = fetch_auth_token(mobile_number, password)
-
-    # Update headers with the new token
-    if auth_key:
-        headers = {"Authorization": f"Bearer {auth_key}"}
-    else:
-        print(f"{Fore.RED}Failed to fetch auth token. Exiting.")
-        exit()
-
-    # Step 2: Retrieve trip details for the selected journey
-    trip_id, trip_route_id, boarding_point_id, train_name = fetch_trip_details(
-        from_city, to_city, date_of_journey, seat_class, train_number
-    )
-
-    # Ensure the retrieved trip details are valid
-    if not trip_id or not trip_route_id or not boarding_point_id:
-        print(f"{Fore.RED}Error: Could not fetch trip details. Please check your inputs.")
-        exit()
-
-    # Step 3: Attempt to reserve selected seats
-    if reserve_seat():
-        # Step 4: Send passenger details and request OTP for confirmation
-        if send_passenger_details():
-            print(f"{Fore.CYAN}Proceeding to OTP verification and confirmation...")
-
-            # Step 5: Verify OTP and confirm the booking
-            otp = input(f"{Fore.YELLOW}Enter the OTP received: ")
-            if verify_and_confirm_booking(otp):
-                print(f"{Fore.GREEN}Booking process completed successfully!")
-            else:
-                print(f"{Fore.RED}Failed to complete booking process.")
+                    print(f"{Fore.RED}Failed to confirm: {r['b'][:200]}")
+            except:
+                print(f"{Fore.RED}Failed to parse confirm response: {r['b'][:200]}")
         else:
-            print(f"{Fore.RED}Failed to send passenger details and get OTP.")
-    else:
-        print(f"{Fore.RED}Failed to reserve the seat.")
+            print(f"{Fore.RED}Failed to confirm booking. Status: {r['s'] if r else 'No response'}")
 
-except Exception as e:
-    print(f"{Fore.RED}An unexpected error occurred: {e}")
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print(f"{Fore.RED}An unexpected error occurred: {e}")
+
+if __name__ == "__main__":
+    main()
