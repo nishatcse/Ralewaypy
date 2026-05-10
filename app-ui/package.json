@@ -71,12 +71,17 @@
         ],
         "linux": {
             "target": [
-                { "target": "AppImage", "arch": ["x64"] },
-                { "target": "rpm", "arch": ["x64"] }
+                "AppImage",
+                "rpm"
             ],
             "category": "Utility",
-            "icon": "build/icon.png",
-            "artifactName": "${productName}-${version}.${ext}"
+            "executableName": "raleway",
+            "artifactName": "${productName}-${version}.${ext}",
+            "desktop": {
+                "Name": "Raleway",
+                "Comment": "Railway Ticket Booking Automation",
+                "Categories": "Utility;"
+            }
         },
         "win": {
             "target": [
