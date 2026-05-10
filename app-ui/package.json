@@ -83,11 +83,12 @@
             "icon": "build/icon.ico"
         },
         "nsis": {
-            "oneClick": false,
-            "allowToChangeInstallationDirectory": true,
-            "installerIcon": "build/icon.ico",
-            "uninstallerIcon": "build/icon.ico",
-            "installerHeaderIcon": "build/icon.ico"
+            "oneClick": true,
+            "perMachine": false,
+            "allowToChangeInstallationDirectory": false,
+            "createDesktopShortcut": true,
+            "createStartMenuShortcut": true,
+            "shortcutName": "Raleway"
         }
     }
 }
