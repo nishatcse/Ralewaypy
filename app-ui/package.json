@@ -50,7 +50,7 @@
     "build": {
         "appId": "com.mamun.raleway",
         "productName": "Raleway",
-        "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
+        "artifactName": "${productName}-Setup-${version}-${arch}.${ext}",
         "directories": {
             "output": "release",
             "buildResources": "build"
