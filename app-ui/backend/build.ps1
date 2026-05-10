@@ -4,7 +4,7 @@
 $ErrorActionPreference = "Stop"
 
 # Get the directory of this script
-$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
+$ScriptDir = $PSScriptRoot
 Set-Location $ScriptDir
 
 # Detect Python command

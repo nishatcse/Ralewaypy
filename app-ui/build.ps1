@@ -4,7 +4,8 @@
 $ErrorActionPreference = "Continue"
 $target = if ($args.Count -gt 0) { $args[0] } else { "win" }
 
-$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
+# Get the directory of this script
+$ScriptDir = $PSScriptRoot
 Set-Location $ScriptDir
 
 Write-Host "=== Raleway Windows Build Pipeline ===" -ForegroundColor Cyan
