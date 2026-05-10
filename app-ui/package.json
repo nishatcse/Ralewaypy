@@ -17,6 +17,7 @@
         "pack": "npm run build && electron-builder --dir",
         "dist": "npm run build && electron-builder",
         "dist:linux": "npm run build && electron-builder --linux",
+        "dist:win": "npm run build && electron-builder --win",
         "postinstall": "electron-builder install-app-deps"
     },
     "dependencies": {
@@ -49,6 +50,7 @@
     "build": {
         "appId": "com.mamun.raleway",
         "productName": "Raleway",
+        "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
         "directories": {
             "output": "release",
             "buildResources": "build"
@@ -61,13 +63,31 @@
         ],
         "extraResources": [
             {
-                "from": "backend/dist/app",
-                "to": "backend/app",
+                "from": "backend/dist/",
+                "to": "backend/app/",
                 "filter": ["**/*"]
             }
         ],
         "linux": {
-            "target": ["AppImage", "deb"]
+            "target": [
+                { "target": "AppImage", "arch": ["x64"] }
+            ],
+            "category": "Utility",
+            "icon": "build/icon.png"
+        },
+        "win": {
+            "target": [
+                { "target": "nsis", "arch": ["x64"] },
+                { "target": "portable", "arch": ["x64"] }
+            ],
+            "icon": "build/icon.png"
+        },
+        "nsis": {
+            "oneClick": false,
+            "allowToChangeInstallationDirectory": true,
+            "installerIcon": "build/icon.png",
+            "uninstallerIcon": "build/icon.png",
+            "installerHeaderIcon": "build/icon.png"
         }
     }
 }

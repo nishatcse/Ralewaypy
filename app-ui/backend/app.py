@@ -1,6 +1,6 @@
 import requests, time, jwt, os, asyncio, re, json
 import urllib.request, urllib.parse
-import subprocess, shutil, signal
+import subprocess, shutil, signal, tempfile, platform
 import websocket
 import sys
 import builtins
@@ -551,7 +551,7 @@ def is_booking_available():
                 # --- FATAL: Order limit exceeded (won't fix itself) ---
                 if error_key == "OrderLimitExceeded":
                     print(f"{Fore.RED}FATAL: You have reached the maximum ticket booking limit.")
-                    exit()
+                    sys.exit(1)
 
                 # --- RETRYABLE: Turnstile token issues (single-use, needs regeneration) ---
                 if error_key in ("TURNSTILE_TOKEN_REQUIRED", "TURNSTILE_VERIFICATION_FAILED"):
@@ -792,11 +792,100 @@ def ensure_on_search_page():
     print(f"{Fore.YELLOW}Turnstile widget may not have loaded. Continuing anyway...")
 
 
+def _find_chrome_binary():
+    """Locate the Chrome/Chromium binary across Linux, macOS, and Windows."""
+    IS_WIN = platform.system() == 'Windows'
+    IS_MAC = platform.system() == 'Darwin'
+
+    if IS_WIN:
+        # Common Chrome install paths on Windows
+        candidates = [
+            os.path.join(os.environ.get('PROGRAMFILES', 'C:\\Program Files'), 'Google', 'Chrome', 'Application', 'chrome.exe'),
+            os.path.join(os.environ.get('PROGRAMFILES(X86)', 'C:\\Program Files (x86)'), 'Google', 'Chrome', 'Application', 'chrome.exe'),
+            os.path.join(os.environ.get('LOCALAPPDATA', ''), 'Google', 'Chrome', 'Application', 'chrome.exe'),
+        ]
+    elif IS_MAC:
+        candidates = [
+            '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+            '/Applications/Chromium.app/Contents/MacOS/Chromium',
+        ]
+    else:  # Linux
+        candidates = [
+            'google-chrome',
+            'google-chrome-stable',
+            'chromium-browser',
+            'chromium',
+        ]
+
+    for c in candidates:
+        if os.path.isabs(c):
+            if os.path.isfile(c):
+                return c
+        else:
+            # Check if command is on PATH
+            try:
+                result = subprocess.run(
+                    ['which', c] if not IS_WIN else ['where', c],
+                    capture_output=True, text=True, timeout=5
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    return c
+            except Exception:
+                pass
+    return None
+
+
+def _kill_chrome_on_port(port):
+    """Kill any Chrome process listening on the given debug port (cross-platform)."""
+    IS_WIN = platform.system() == 'Windows'
+
+    if IS_WIN:
+        # Windows: use netstat + taskkill
+        try:
+            result = subprocess.run(
+                ['netstat', '-ano'],
+                capture_output=True, text=True, timeout=5
+            )
+            for line in result.stdout.splitlines():
+                if f':{port}' in line and 'LISTENING' in line:
+                    parts = line.split()
+                    pid = parts[-1]
+                    if pid.isdigit():
+                        subprocess.run(['taskkill', '/PID', pid, '/F'],
+                                       capture_output=True, timeout=5)
+        except Exception as e:
+            print(f"{Fore.YELLOW}Could not kill Chrome on Windows: {e}")
+            # Fallback
+            subprocess.run(['taskkill', '/IM', 'chrome.exe', '/F'],
+                           capture_output=True, timeout=5)
+    else:
+        # Linux/macOS: use lsof + kill
+        try:
+            result = subprocess.run(
+                ['lsof', '-ti', f':{port}'],
+                capture_output=True, text=True, timeout=5
+            )
+            for pid in result.stdout.strip().split('\n'):
+                if pid:
+                    try:
+                        os.kill(int(pid), signal.SIGTERM)
+                    except (ProcessLookupError, ValueError):
+                        pass
+        except Exception as e:
+            print(f"{Fore.YELLOW}Could not kill existing Chrome: {e}")
+            # Fallback: pkill
+            subprocess.run(['pkill', '-f', f'remote-debugging-port={port}'],
+                           capture_output=True, timeout=5)
+
+    time.sleep(2)
+
+
 def launch_chrome():
     """Launch Chrome with remote debugging, killing any existing debug session first.
-    Clears user-data-dir for a clean session (forces fresh login)."""
+    Clears user-data-dir for a clean session (forces fresh login).
+    Works on Linux, macOS, and Windows."""
     CHROME_DEBUG_PORT = 9222
-    CHROME_USER_DATA = "/tmp/chrome-debug"
+    CHROME_USER_DATA = os.path.join(tempfile.gettempdir(), 'chrome-debug')
 
     # Check if port 9222 is already listening
     def port_is_open():
@@ -809,45 +898,39 @@ def launch_chrome():
 
     if port_is_open():
         print(f"{Fore.YELLOW}Chrome debug port {CHROME_DEBUG_PORT} already open. Killing existing session...")
-        # Find and kill the Chrome process using this debug port
-        try:
-            result = subprocess.run(
-                ['lsof', '-ti', f':{CHROME_DEBUG_PORT}'],
-                capture_output=True, text=True, timeout=5
-            )
-            for pid in result.stdout.strip().split('\n'):
-                if pid:
-                    try:
-                        os.kill(int(pid), signal.SIGTERM)
-                    except (ProcessLookupError, ValueError):
-                        pass
-            time.sleep(2)
-        except Exception as e:
-            print(f"{Fore.YELLOW}Could not kill existing Chrome: {e}")
-            # Fallback: pkill
-            subprocess.run(['pkill', '-f', f'remote-debugging-port={CHROME_DEBUG_PORT}'],
-                           capture_output=True, timeout=5)
-            time.sleep(2)
+        _kill_chrome_on_port(CHROME_DEBUG_PORT)
 
     # Clean user data for fresh session
     if os.path.exists(CHROME_USER_DATA):
         print(f"{Fore.YELLOW}Clearing Chrome user data for clean session...")
         shutil.rmtree(CHROME_USER_DATA, ignore_errors=True)
 
-    # Launch Chrome
-    print(f"{Fore.CYAN}Launching Chrome with remote debugging on port {CHROME_DEBUG_PORT}...")
+    # Find Chrome binary
+    chrome_bin = _find_chrome_binary()
+    if not chrome_bin:
+        print(f"{Fore.RED}Chrome not found! Please install Google Chrome.")
+        return False
+
+    # Launch Chrome — window pushed off-screen so it doesn't distract the user
+    print(f"{Fore.CYAN}Launching Chrome ({chrome_bin}) with remote debugging on port {CHROME_DEBUG_PORT}...")
     chrome_cmd = [
-        'google-chrome',
+        chrome_bin,
         f'--remote-debugging-port={CHROME_DEBUG_PORT}',
         f'--user-data-dir={CHROME_USER_DATA}',
         '--remote-allow-origins=*',
         '--no-first-run',
         '--no-default-browser-check',
-        '--headless=new',
+        '--window-position=-32000,-32000',
         '--window-size=1920,1080',
+        '--disable-focus-on-launch',
         'https://eticket.railway.gov.bd/'
     ]
-    subprocess.Popen(chrome_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    # On Windows, use CREATE_NO_WINDOW to suppress the console window
+    kwargs = {'stdout': subprocess.DEVNULL, 'stderr': subprocess.DEVNULL}
+    if platform.system() == 'Windows':
+        kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
+    subprocess.Popen(chrome_cmd, **kwargs)
 
     # Wait for Chrome to be ready
     print(f"{Fore.YELLOW}Waiting for Chrome to start...")
@@ -866,12 +949,16 @@ def launch_chrome():
 
 def fresh_login():
     """Open homepage first, wait for it to load, click Login link,
-    then fill credentials and submit. This ensures Cloudflare loads properly."""
+    then fill credentials and submit. This ensures Cloudflare loads properly.
+    
+    Key insight: Cloudflare Turnstile MUST fully solve its challenge before
+    we attempt to submit the login form. We wait for the hidden
+    cf-turnstile-response input to contain a valid token."""
     print(f"{Fore.CYAN}Starting fresh login...")
 
-    # Step 1: Wait for homepage to fully load
-    print(f"{Fore.YELLOW}Waiting for homepage to load...")
-    time.sleep(10)  # Give the Angular app time to bootstrap
+    # Step 1: Wait for homepage to fully load (Angular bootstrap + Cloudflare JS)
+    print(f"{Fore.YELLOW}Step 1/6: Waiting for homepage to load...")
+    time.sleep(12)  # Give the Angular app + Cloudflare scripts time to bootstrap
 
     ws_url = get_ws_url(force=True)
     if not ws_url:
@@ -881,11 +968,10 @@ def fresh_login():
     current = exec_js(ws_url, "location.href")
     print(f"{Fore.CYAN}Current page: {current}")
 
-    # Step 2: If on homepage, find and click the Login link/button
+    # Step 2: Navigate to login page
     if current and '/login' not in current:
-        print(f"{Fore.YELLOW}Looking for Login link on homepage...")
+        print(f"{Fore.YELLOW}Step 2/6: Navigating to login page...")
         clicked = exec_js(ws_url, '''(() => {
-            // Try common login link selectors
             const selectors = [
                 'a[href*="/login"]',
                 'a[routerlink*="/login"]',
@@ -899,7 +985,6 @@ def fresh_login():
                     return 'clicked: ' + sel;
                 }
             }
-            // Fallback: find any link/button containing "Login" text
             const allLinks = document.querySelectorAll('a, button');
             for (const el of allLinks) {
                 const text = el.textContent.trim().toLowerCase();
@@ -914,7 +999,6 @@ def fresh_login():
         if clicked:
             print(f"{Fore.GREEN}Clicked login link ({clicked}). Waiting for login page...")
         else:
-            # If no login link found, navigate directly
             print(f"{Fore.YELLOW}No login link found, navigating directly...")
             exec_js(ws_url, "location.href = 'https://eticket.railway.gov.bd/login'")
 
@@ -922,26 +1006,72 @@ def fresh_login():
         ws_url = get_ws_url(force=True)
         if not ws_url:
             return False
-
-    # Step 3: Wait for login page to fully render (Angular app)
-    print(f"{Fore.YELLOW}Waiting for login form to render...")
-    for i in range(15):
-        has_form = exec_js(ws_url, '''(() => {
-            const inputs = document.querySelectorAll('input');
-            return inputs.length >= 2;
-        })()''')
-        if has_form:
-            print(f"{Fore.GREEN}Login form loaded!")
-            break
-        time.sleep(4)
     else:
-        print(f"{Fore.RED}Login form did not load in 15s.")
+        print(f"{Fore.GREEN}Step 2/6: Already on login page.")
+
+    # Step 3: Wait for login form to fully render (Angular app)
+    print(f"{Fore.YELLOW}Step 3/6: Waiting for login form to render...")
+    form_loaded = False
+    for i in range(20):
+        try:
+            ws_url = get_ws_url(force=True) or ws_url
+            has_form = exec_js(ws_url, '''(() => {
+                const inputs = document.querySelectorAll('input');
+                return inputs.length >= 2;
+            })()''')
+            if has_form:
+                print(f"{Fore.GREEN}Login form detected!")
+                form_loaded = True
+                break
+        except:
+            pass
+        time.sleep(3)
+
+    if not form_loaded:
+        print(f"{Fore.RED}Login form did not load within 60s.")
         return False
 
-    # Step 4: Fill credentials and submit (auto_login waits for Cloudflare)
+    # Step 4: Wait for Cloudflare Turnstile challenge to solve BEFORE filling creds.
+    # This is the critical step — Turnstile needs the page visible (non-headless)
+    # and time to render the iframe, run the challenge, and populate the hidden input.
+    print(f"{Fore.YELLOW}Step 4/6: Waiting for Cloudflare Turnstile challenge to solve...")
+    turnstile_solved = False
+    for attempt in range(30):  # Up to 30s for Turnstile
+        try:
+            token_status = exec_js(ws_url, '''(() => {
+                const iframe = document.querySelector('iframe[src*="turnstile"]');
+                const inp = document.querySelector('input[name="cf-turnstile-response"]');
+                const hasToken = inp && inp.value && inp.value.length > 10;
+                return JSON.stringify({
+                    iframeFound: !!iframe,
+                    inputFound: !!inp,
+                    hasToken: hasToken,
+                    tokenLen: inp ? (inp.value || '').length : 0
+                });
+            })()''')
+            if token_status:
+                status = json.loads(token_status)
+                if status.get('hasToken'):
+                    print(f"{Fore.GREEN}Turnstile challenge solved! (token length: {status['tokenLen']})")
+                    turnstile_solved = True
+                    break
+                else:
+                    detail = f"iframe={'✓' if status.get('iframeFound') else '✗'}, input={'✓' if status.get('inputFound') else '✗'}"
+                    if attempt % 5 == 0:
+                        print(f"{Fore.YELLOW}  Turnstile solving... ({detail}) [{attempt+1}/30]")
+        except:
+            pass
+        time.sleep(1)
+
+    if not turnstile_solved:
+        print(f"{Fore.RED}Turnstile challenge did not solve within 30s. Proceeding anyway (may fail)...")
+
+    # Step 5: Fill credentials and submit
+    print(f"{Fore.YELLOW}Step 5/6: Filling credentials and submitting...")
     auto_login_if_needed(ws_url)
 
-    # Step 5: Verify login succeeded — wait for token in localStorage
+    # Step 6: Verify login succeeded — wait for token in localStorage
+    print(f"{Fore.YELLOW}Step 6/6: Verifying login...")
     for i in range(30):
         time.sleep(1)
         try:
