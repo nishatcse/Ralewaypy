@@ -1,0 +1,506 @@
+/* Removed fontsource imports */
+
+/* Tailwind CSS Directives */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Light Mode - Professional Slate/Blue */
+    /* Backgrounds */
+    --bg-canvas: 210 40% 98%;
+    /* #F8FAFC - Slate 50 - Main app background */
+    --bg-surface: 0 0% 100%;
+    /* #FFFFFF - White - Cards/Panels */
+    --bg-surface-hover: 210 40% 96.1%;
+    /* #F1F5F9 - Slate 100 */
+
+    /* Text - Optimized for readability */
+    --text-primary: 222 47% 11.2%;
+    /* #0F172A - Slate 900 - High contrast for body/headings */
+    --text-secondary: 215 25% 27%;
+    /* #334155 - Slate 700 - Subtitles/Descriptions */
+    --text-tertiary: 215 16% 47%;
+    /* #64748B - Slate 500 - Muted text/Captions */
+
+    /* Borders */
+    --border-subtle: 214 32% 91%;
+    /* #E2E8F0 - Slate 200 */
+    --border-strong: 214 32% 80%;
+    /* #CBD5E1 - Slate 300 */
+
+    /* Brand/Accent - Professional Blue */
+    --accent-primary: 221 83% 53%;
+    /* #2563EB - Blue 600 */
+    --accent-foreground: 0 0% 100%;
+    /* #FFFFFF */
+    --accent-hover: 221 83% 48%;
+    /* #1D4ED8 - Blue 700 */
+    --accent-subtle: 210 40% 96%;
+    /* #F1F5F9 - Slate 100 */
+
+    /* Status Colors */
+    --status-success: 142 71% 45%;
+    /* #16A34A */
+    --status-warning: 38 92% 50%;
+    /* #F59E0B */
+    --status-error: 0 84% 60%;
+    /* #DC2626 */
+    --status-info: 217 91% 60%;
+    /* #3B82F6 */
+
+    /* Typography Customization - Defaults */
+    --font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    --font-size-base: 16px;
+    --line-height-base: 1.7;
+    --letter-spacing-base: -0.005em;
+  }
+
+  .dark {
+    /* Dark Mode - Solid Native Desktop Feel */
+    /* Backgrounds - Solid, opaque colors */
+    --bg-canvas: 240 8% 10%;
+    /* #18181D - Darker, more solid canvas */
+    --bg-surface: 240 8% 16%;
+    /* #262629 - Solid surface, no transparency */
+    --bg-surface-hover: 240 8% 20%;
+    /* #313135 - Stronger hover state */
+
+    /* Text - Maximum contrast for visibility */
+    --text-primary: 0 0% 100%;
+    /* #FFFFFF - Pure white for maximum visibility */
+    --text-secondary: 0 0% 90%;
+    /* #E6E6E6 - Very light gray, still highly visible */
+    --text-tertiary: 0 0% 70%;
+    /* #B3B3B3 - Medium gray with good contrast */
+
+    /* Borders - More visible */
+    --border-subtle: 240 8% 24%;
+    /* More visible borders */
+    --border-strong: 240 8% 32%;
+    /* Strong borders */
+
+    /* Brand/Accent - Stronger purple */
+    --accent-primary: 241 35% 40%;
+    /* #4A4586 - Stronger, more saturated purple */
+    --accent-foreground: 0 0% 100%;
+    /* #FFFFFF - White text on button */
+    --accent-hover: 241 35% 45%;
+    /* Brighter purple on hover */
+    --accent-subtle: 241 35% 18%;
+    /* Subtle purple background */
+  }
+
+  /* Settings Page Specific Dark Mode Overrides - Brighter Indigo for visibility */
+  .dark .settings-theme-scope {
+    --accent-primary: 243 85% 66%;
+    /* Indigo 500 #6366F1 */
+    --accent-hover: 243 85% 60%;
+    /* Slightly darker indigo */
+    --accent-subtle: 243 85% 18%;
+    /* Indigo tint */
+  }
+
+  /* Lock Settings Page Typography */
+  .settings-theme-scope {
+    font-size: 0.9375rem;
+    /* 15px fixed */
+    line-height: 1.5;
+  }
+
+  /* Thin scrollbar for dropdowns */
+  .thin-scrollbar::-webkit-scrollbar {
+    width: 5px;
+  }
+
+  .thin-scrollbar::-webkit-scrollbar-thumb {
+    border-radius: 5px;
+    background: hsl(var(--border-strong));
+  }
+
+  .thin-scrollbar::-webkit-scrollbar-thumb:hover {
+    background: hsl(var(--text-tertiary));
+  }
+
+  /* High Contrast Mode Override - Monochrome */
+  /* High Contrast Mode Override - Vivid */
+  .high-contrast {
+    --bg-canvas: 0 0% 0%;
+    --bg-surface: 0 0% 0%;
+    --bg-surface-hover: 0 0% 15%;
+
+    --text-primary: 0 0% 100%;
+    /* White */
+    --text-secondary: 60 100% 50%;
+    /* Bright Yellow */
+    --text-tertiary: 180 100% 50%;
+    /* Bright Cyan */
+
+    --border-subtle: 0 0% 100%;
+    /* White */
+    --border-strong: 60 100% 50%;
+    /* Yellow */
+
+    --accent-primary: 60 100% 50%;
+    /* Yellow */
+    --accent-foreground: 0 0% 0%;
+    /* Black */
+    --accent-subtle: 0 0% 20%;
+
+    --status-success: 120 100% 50%;
+    /* Bright Green */
+    --status-warning: 39 100% 50%;
+    /* Orange */
+    --status-error: 0 100% 50%;
+    /* Red */
+  }
+
+  /* High Contrast Light Mode Override - Monochrome */
+  html:not(.dark).high-contrast {
+    --bg-canvas: 0 0% 100%;
+    --bg-surface: 0 0% 100%;
+    --bg-surface-hover: 0 0% 80%;
+
+    --text-primary: 0 0% 0%;
+    --text-secondary: 0 0% 0%;
+    --text-tertiary: 0 0% 0%;
+
+    --border-subtle: 0 0% 0%;
+    --border-strong: 0 0% 0%;
+
+    --accent-primary: 0 0% 0%;
+    --accent-foreground: 0 0% 100%;
+    --accent-subtle: 0 0% 80%;
+  }
+
+  body {
+    @apply bg-bg-canvas text-text-primary antialiased;
+    /* Use CSS custom properties for user customization */
+    font-family: var(--font-family);
+    font-size: var(--font-size-base);
+    line-height: var(--line-height-base);
+    letter-spacing: var(--letter-spacing-base);
+
+    /* --- Supreme Font Clarity Optimization 💎 --- */
+    font-weight: 400;
+
+    /* 1. Force crisp antialiasing - Highest precision for Windows */
+    -webkit-font-smoothing: subpixel-antialiased !important;
+    -moz-osx-font-smoothing: grayscale;
+    font-smooth: always;
+
+    /* 2. Text rendering strategy - Legibility is king 👑 */
+    text-rendering: optimizeLegibility;
+    image-rendering: -webkit-optimize-contrast;
+    /* Sharpens images and some fonts */
+
+    /* 3. Inter-specific optimizations for clarity - The secret sauce 🧪 */
+    /* cv05: l with tail, cv08: I with serifs, etc. */
+    font-feature-settings: "cv05", "cv08", "cv10", "cv11", "ss01", "liga", "kern", "calt";
+    font-variant-ligatures: common-ligatures;
+
+    /* 4. Sub-pixel rendering and contrast - The Windows "Glow" reduction 🎯 */
+    text-shadow: 0 0 1px rgba(0, 0, 0, 0.01);
+    /* Super subtle contrast boost */
+
+    user-select: none;
+  }
+
+  /* Sharper text specifically for Dark Mode 🌙 */
+  .dark body {
+    /* Slightly increase contrast for dark mode rendering */
+    -webkit-font-smoothing: antialiased;
+    text-shadow: 0 0 0.1px rgba(255, 255, 255, 0.05);
+    /* Prevents "thickness" on dark bg */
+    font-weight: 400;
+    /* Ensuring it stays crisp */
+  }
+
+  /* Headings */
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    @apply font-semibold tracking-tight text-text-primary;
+    line-height: 1.25;
+  }
+
+  h1 {
+    @apply text-3xl sm:text-4xl;
+  }
+
+  h2 {
+    @apply text-2xl sm:text-3xl;
+  }
+
+  h3 {
+    @apply text-xl sm:text-2xl;
+  }
+
+  h4 {
+    @apply text-lg sm:text-xl;
+  }
+
+  /* Paragraphs */
+  p {
+    @apply mb-4 leading-relaxed;
+    max-width: 65ch;
+    /* Optimal line length for readability */
+  }
+
+  /* Small text / Meta */
+  small,
+  .text-sm {
+    font-size: 0.875rem;
+    /* 14px */
+    line-height: 1.5;
+  }
+
+  .text-xs {
+    font-size: 0.75rem;
+    /* 12px */
+    line-height: 1.5;
+  }
+
+  ::selection {
+    background-color: hsl(var(--accent-primary) / 0.3);
+    color: hsl(var(--text-primary));
+  }
+
+  code,
+  pre {
+    font-family: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
+  }
+
+  /* Allow text selection in specific areas */
+  .select-text {
+    user-select: text;
+  }
+
+  /* ============================================
+     DESKTOP APP POLISH - Smooth Transitions
+     ============================================ */
+
+  /* Global smooth transitions for interactive elements */
+  button,
+  a,
+  [role="button"],
+  [role="tab"],
+  input,
+  textarea,
+  select {
+    transition: all 150ms cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  /* Enhanced keyboard-only focus indicators */
+  :focus-visible {
+    outline: 2px solid hsl(var(--accent-primary));
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+
+  /* Remove outline for mouse/touch interactions */
+  :focus:not(:focus-visible) {
+    outline: none;
+  }
+
+  /* Ensure inputs/textareas never show outline on mouse click */
+  input:focus,
+  textarea:focus,
+  select:focus {
+    outline: none !important;
+    box-shadow: none !important;
+  }
+
+  /* Remove any ring effects */
+  input,
+  textarea,
+  select {
+    --tw-ring-offset-shadow: 0 0 transparent !important;
+    --tw-ring-shadow: 0 0 transparent !important;
+  }
+
+  /* But keep keyboard focus for accessibility */
+  input:focus-visible,
+  textarea:focus-visible,
+  select:focus-visible {
+    outline: 2px solid hsl(var(--accent-primary));
+    outline-offset: 2px;
+  }
+
+  /* Respect reduced motion preference */
+  @media (prefers-reduced-motion: reduce) {
+
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+@layer utilities {
+  .glass {
+    /* Removed glass effect for solid theme, keeping class for compatibility but resetting styles */
+    @apply bg-bg-surface border border-border-subtle;
+  }
+
+  .glass-panel {
+    @apply bg-bg-surface border border-border-subtle shadow-sm;
+  }
+
+  .animate-in {
+    animation: animate-in 0.2s ease-out;
+  }
+
+  .animate-slide-up {
+    animation: slide-up 0.3s ease-out;
+  }
+}
+
+@keyframes animate-in {
+  from {
+    opacity: 0;
+    transform: scale(0.98);
+  }
+
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ============================================
+   DESKTOP-OPTIMIZED SCROLLBARS
+   ============================================ */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: hsl(var(--border-strong));
+  border-radius: 10px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+  transition: background 150ms ease-out;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--text-tertiary));
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-thumb:active {
+  background: hsl(var(--text-secondary));
+  background-clip: content-box;
+}
+
+.high-contrast ::-webkit-scrollbar-thumb {
+  background: hsl(var(--text-primary));
+  border: none;
+}
+
+/* Electron Window Dragging */
+.draggable {
+  -webkit-app-region: drag;
+}
+
+.no-drag {
+  -webkit-app-region: no-drag;
+}
+
+/* ============================================
+   MINIMALIST PREMIUM UI UTILITIES 💎
+   ============================================ */
+
+/* Theme-Aware Glass Surface */
+.glass-surface {
+  @apply backdrop-blur-xl border transition-all duration-300;
+  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+.dark .glass-surface {
+  background: rgba(0, 0, 0, 0.2);
+  border-color: rgba(255, 255, 255, 0.05);
+}
+
+.glass-surface-hover:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.15);
+  transform: translateY(-1px);
+}
+
+.dark .glass-surface-hover:hover {
+  background: rgba(255, 255, 255, 0.03);
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+/* Refined Subtle Border Glow */
+.animate-border-subtle {
+  position: relative;
+}
+
+.animate-border-subtle::before {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  background: linear-gradient(90deg, #6366f1, #a855f7, #6366f1);
+  background-size: 200% 200%;
+  z-index: -1;
+  animation: border-flow-subtle 4s linear infinite;
+  border-radius: inherit;
+  mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  mask-composite: exclude;
+  -webkit-mask-composite: destination-out;
+  padding: 1px;
+  opacity: 0.3;
+}
+
+@keyframes border-flow-subtle {
+  0% {
+    background-position: 0% 50%
+  }
+
+  100% {
+    background-position: 200% 50%
+  }
+}
+
+/* Core Micro-interactions */
+.icon-glow {
+  filter: drop-shadow(0 0 5px rgba(99, 102, 241, 0.5));
+}
+
+.text-gradient {
+  background: linear-gradient(to right, #6366f1, #a855f7);
+  background-clip: text;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.hover-lift {
+  @apply transition-transform duration-300 hover:-translate-y-0.5 active:scale-[0.98];
+}
