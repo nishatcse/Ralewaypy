@@ -53,7 +53,9 @@ function createWindow(): void {
     if (process.env.NODE_ENV === 'development') {
         mainWindow.loadURL('http://localhost:3000');
     } else {
-        mainWindow.loadFile(path.join(__dirname, '../../renderer/index.html'));
+        // In production, we are running from dist/main/main.js
+        // The UI is in dist/renderer/index.html
+        mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
     }
 
     mainWindow.on('closed', () => {
