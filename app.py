@@ -842,7 +842,7 @@ def fresh_login():
 
     # Step 1: Wait for homepage to fully load
     print(f"{Fore.YELLOW}Waiting for homepage to load...")
-    time.sleep(5)  # Give the Angular app time to bootstrap
+    time.sleep(10)  # Give the Angular app time to bootstrap
 
     ws_url = get_ws_url(force=True)
     if not ws_url:
@@ -889,7 +889,7 @@ def fresh_login():
             print(f"{Fore.YELLOW}No login link found, navigating directly...")
             exec_js(ws_url, "location.href = 'https://eticket.railway.gov.bd/login'")
 
-        time.sleep(5)  # Wait for navigation and page load
+        time.sleep(10)  # Wait for navigation and page load
         ws_url = get_ws_url(force=True)
         if not ws_url:
             return False
@@ -904,7 +904,7 @@ def fresh_login():
         if has_form:
             print(f"{Fore.GREEN}Login form loaded!")
             break
-        time.sleep(1)
+        time.sleep(4)
     else:
         print(f"{Fore.RED}Login form did not load in 15s.")
         return False
