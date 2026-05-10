@@ -71,17 +71,17 @@
         ],
         "linux": {
             "target": [
-                "AppImage",
-                "rpm"
+                { "target": "AppImage", "arch": ["x64"] },
+                { "target": "rpm", "arch": ["x64"] }
             ],
             "category": "Utility",
-            "executableName": "raleway",
-            "artifactName": "${productName}-${version}.${ext}",
-            "desktop": {
-                "Name": "Raleway",
-                "Comment": "Railway Ticket Booking Automation",
-                "Categories": "Utility;"
-            }
+            "icon": "build/icon.png",
+            "executableName": "raleway"
+        },
+        "rpm": {
+            "packageName": "raleway",
+            "depends": ["gtk3", "libnotify", "nss", "libXScrnSaver", "libXtst", "xdg-utils", "at-spi2-core", "libuuid"],
+            "artifactName": "${productName}-${version}.${ext}"
         },
         "win": {
             "target": [
