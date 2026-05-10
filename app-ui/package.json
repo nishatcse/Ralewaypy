@@ -50,7 +50,7 @@
     "build": {
         "appId": "com.mamun.raleway",
         "productName": "Raleway",
-        "artifactName": "${productName}-Setup-${version}-${arch}.${ext}",
+        "artifactName": "${productName}-${version}-${arch}.${ext}",
         "directories": {
             "output": "release",
             "buildResources": "build"
@@ -88,7 +88,9 @@
             "allowToChangeInstallationDirectory": true,
             "createDesktopShortcut": true,
             "createStartMenuShortcut": true,
-            "shortcutName": "Raleway"
+            "shortcutName": "Raleway",
+            "runAfterFinish": false,
+            "artifactName": "${productName}-Installer-${version}.${ext}"
         }
     }
 }
