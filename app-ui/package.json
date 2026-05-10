@@ -1,9 +1,10 @@
 {
     "name": "raleway-booking-app",
     "version": "1.0.0",
-    "description": "Standalone Railway Ticket Booking Application",
+    "description": "Railway Ticket Booking Automation App",
     "main": "dist/main/main.js",
-    "author": "Md Abdullah Al Mamun",
+    "author": "Md Abdullah Al Mamun <mamun@example.com>",
+    "homepage": "https://github.com/memamun/Ralewaypy",
     "license": "MIT",
     "scripts": {
         "dev": "concurrently \"npm run dev:renderer\" \"npm run dev:main\" \"npm run dev:preload\"",
