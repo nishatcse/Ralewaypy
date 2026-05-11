@@ -328,7 +328,7 @@ def get_turnstile_token(ws_url, force=False):
     _, token = wait_for_js_value(ws_url, '''(() => {
         const inp = document.querySelector('input[name="cf-turnstile-response"]');
         return inp && inp.value ? inp.value : null;
-    })()''', timeout=3, interval=0.5)
+    })()''', timeout=8, interval=0.5)
     return token
 
 
@@ -675,6 +675,28 @@ def fetch_trip_details():
 
     retry_delay = 1
     while True:
+        # Determine retry interval based on proximity to 08:00:00 AM release
+        now = datetime.now()
+        target = now.replace(hour=8, minute=0, second=0, microsecond=0)
+        diff = (target - now).total_seconds()
+        
+        if diff > 3600:    # Before 07:00:00 AM
+            wait_time = 3600
+        elif diff > 300:   # 07:00:00 AM - 07:55:00 AM
+            wait_time = 600
+        elif diff > 60:    # 07:55:00 AM - 07:59:00 AM
+            wait_time = 10
+        elif diff > 10:    # 07:59:00 AM - 07:59:50 AM
+            wait_time = 5
+        else:              # After 07:59:50 AM
+            wait_time = 1
+            
+        # Ensure we don't sleep past the next logical threshold
+        for threshold in [3600, 300, 60, 10]:
+            if diff > threshold:
+                wait_time = min(wait_time, int(diff - threshold) + 1)
+                break
+
         r = api_request("GET", "/v1.0/web/bookings/search-trips-v2", {"from_city": from_city, "to_city": to_city, "date_of_journey": formatted_date, "seat_class": seat_class})
 
         if r and r.get('s') == 200:
@@ -683,8 +705,8 @@ def fetch_trip_details():
             except:
                 data = []
             if not data:
-                print(f"{Fore.YELLOW}Trip details not available yet. Retrying in 1 second...")
-                time.sleep(1)
+                print(f"{Fore.YELLOW}Trip details not available yet. Retrying in {wait_time} second(s)...")
+                time.sleep(wait_time)
                 continue
             for train in data:
                 if train.get("train_model") == str(train_number):
@@ -696,8 +718,8 @@ def fetch_trip_details():
                             train_name = train.get("trip_number")
                             print(f"{Fore.GREEN}Trip details found! Train: {train_name}, Trip ID: {trip_id}, Route ID: {trip_route_id}, Boarding Point ID: {boarding_point_id}")
                             return trip_id, trip_route_id, boarding_point_id, train_name
-            print(f"{Fore.YELLOW}Train {train_number} / {seat_class} not available yet. Retrying in 1 second...")
-            time.sleep(1)
+            print(f"{Fore.YELLOW}Train {train_number} / {seat_class} not available yet. Retrying in {wait_time} second(s)...")
+            time.sleep(wait_time)
             retry_delay = 1  # Reset backoff on 200 OK
         elif r and r.get('s') in [500, 502, 503, 504]:
             print(f"{Fore.YELLOW}Server overloaded ({r['s']}). Retrying in {retry_delay} second(s)...")
@@ -751,7 +773,8 @@ def is_booking_available():
                 # --- RETRYABLE: Page verification issues ---
                 if error_key in ("TURNSTILE_TOKEN_REQUIRED", "TURNSTILE_VERIFICATION_FAILED"):
                     print(f"{Fore.YELLOW}Page verification token not accepted. Waiting before retry...")
-                    time.sleep(3)
+                    invalidate_turnstile()
+                    time.sleep(5)
                     continue
 
                 # --- RETRYABLE: Booking window not open yet ---
@@ -899,8 +922,14 @@ def reserve_seat():
 
         ticket_id_map = get_ticket_ids_from_layout(seat_layout, desired_seats, max_selectable_seat, flexible_seat_count)
         if not ticket_id_map:
-            print(f"{Fore.RED}No matching seat group found. Retrying in 1s...")
-            time.sleep(1)
+            if total_available == 0:
+                # If there are NO seats at all, back off more aggressively to avoid hitting Turnstile limits
+                print(f"{Fore.YELLOW}Layout is empty. No seats available. Retrying in 4s...")
+                time.sleep(4)
+            else:
+                # Some seats exist but didn't match our criteria (e.g. strict mode)
+                print(f"{Fore.RED}No matching seat group found. Retrying in 2s...")
+                time.sleep(2)
             continue
 
         ticket_ids = list(ticket_id_map.keys())
