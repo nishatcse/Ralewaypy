@@ -6,6 +6,28 @@ import * as fs from 'fs';
 let mainWindow: BrowserWindow | null = null;
 let pythonProcess: ChildProcess | null = null;
 
+function sendBackendEvent(event: Record<string, unknown>): void {
+    mainWindow?.webContents.send('backend-event', event);
+}
+
+function validateBookingConfig(config: any): string | null {
+    if (!config || typeof config !== 'object') return 'Missing booking configuration.';
+    if (!String(config.MOBILE_NUMBER || '').trim()) return 'Mobile number is required.';
+    if (!String(config.PASSWORD || '').trim()) return 'Password is required.';
+    if (!String(config.FROM_CITY || '').trim()) return 'From city is required.';
+    if (!String(config.TO_CITY || '').trim()) return 'To city is required.';
+    if (!String(config.DATE_OF_JOURNEY || '').trim()) return 'Journey date is required.';
+    if (!String(config.SEAT_CLASS || '').trim()) return 'Seat class is required.';
+
+    const trainNumber = Number(config.TRAIN_NUMBER);
+    if (!Number.isInteger(trainNumber) || trainNumber <= 0) return 'Train number must be a positive number.';
+
+    const seatCount = Number(config.MAX_SELECTABLE_SEAT);
+    if (!Number.isInteger(seatCount) || seatCount < 1 || seatCount > 4) return 'Seat count must be between 1 and 4.';
+
+    return null;
+}
+
 function getPythonBinaryPath(): string {
     // Check if running in production (packaged) or development
     const isPackaged = app.isPackaged;
@@ -78,7 +100,16 @@ function setupIpc() {
     });
     ipcMain.on('window:close', () => mainWindow?.close());
     ipcMain.on('open-external', (_event, url) => {
-        require('electron').shell.openExternal(url);
+        try {
+            const parsed = new URL(String(url));
+            if (parsed.protocol === 'https:') {
+                require('electron').shell.openExternal(parsed.toString());
+            } else {
+                sendBackendEvent({ type: 'log', level: 'error', message: 'Invalid payment URL blocked.' });
+            }
+        } catch {
+            sendBackendEvent({ type: 'log', level: 'error', message: 'Invalid payment URL blocked.' });
+        }
     });
 
     ipcMain.handle('check-system', async () => {
@@ -113,7 +144,12 @@ function setupIpc() {
 
     ipcMain.handle('start-booking', async (_event, config) => {
         if (pythonProcess) {
-            pythonProcess.kill();
+            return { success: false, error: 'A booking process is already running.' };
+        }
+
+        const validationError = validateBookingConfig(config);
+        if (validationError) {
+            return { success: false, error: validationError };
         }
 
         const isPackaged = app.isPackaged;
@@ -139,31 +175,48 @@ function setupIpc() {
                 stdio: ['pipe', 'pipe', 'pipe']
             });
 
+            let stdoutBuffer = '';
+
             // Send config via stdin
             if (pythonProcess.stdin) {
                 pythonProcess.stdin.write(JSON.stringify(config) + '\n');
             }
 
             pythonProcess.stdout?.on('data', (data) => {
-                const output = data.toString();
-                const lines = output.split('\n').filter(Boolean);
+                stdoutBuffer += data.toString();
+                const lines = stdoutBuffer.split('\n');
+                stdoutBuffer = lines.pop() || '';
                 
                 for (const line of lines) {
+                    if (!line.trim()) continue;
                     try {
                         const parsed = JSON.parse(line);
-                        mainWindow?.webContents.send('backend-event', parsed);
+                        sendBackendEvent(parsed);
                     } catch (e) {
-                        mainWindow?.webContents.send('backend-event', { type: 'log', message: line });
+                        sendBackendEvent({ type: 'log', message: line });
                     }
                 }
             });
 
             pythonProcess.stderr?.on('data', (data) => {
-                mainWindow?.webContents.send('backend-event', { type: 'log', level: 'error', message: data.toString() });
+                sendBackendEvent({ type: 'log', level: 'error', message: data.toString() });
             });
 
-            pythonProcess.on('close', (code) => {
-                mainWindow?.webContents.send('backend-event', { type: 'log', message: `Process exited with code ${code}` });
+            pythonProcess.on('error', (error) => {
+                sendBackendEvent({ type: 'log', level: 'error', message: `Failed to start process: ${error.message}` });
+                sendBackendEvent({ type: 'backend_exit', code: null, signal: null, error: error.message });
+            });
+
+            pythonProcess.on('close', (code, signal) => {
+                if (stdoutBuffer.trim()) {
+                    try {
+                        sendBackendEvent(JSON.parse(stdoutBuffer));
+                    } catch {
+                        sendBackendEvent({ type: 'log', message: stdoutBuffer.trim() });
+                    }
+                }
+                sendBackendEvent({ type: 'log', message: `Process exited with code ${code}${signal ? ` (${signal})` : ''}` });
+                sendBackendEvent({ type: 'backend_exit', code, signal });
                 pythonProcess = null;
             });
 
@@ -175,9 +228,8 @@ function setupIpc() {
 
     ipcMain.handle('stop-booking', () => {
         if (pythonProcess) {
-            pythonProcess.kill();
-            pythonProcess = null;
-            return { success: true };
+            const stopped = pythonProcess.kill('SIGTERM');
+            return stopped ? { success: true } : { success: false, error: 'Failed to send stop signal' };
         }
         return { success: false, error: 'No process running' };
     });

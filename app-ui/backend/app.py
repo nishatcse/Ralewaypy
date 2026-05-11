@@ -1,4 +1,4 @@
-import requests, time, jwt, os, asyncio, re, json, select
+import requests, time, jwt, os, asyncio, re, json, queue, threading
 import urllib.request, urllib.parse
 import subprocess, shutil, signal, tempfile, platform
 import websocket
@@ -70,6 +70,33 @@ def custom_input(prompt_text):
     builtins.print(json.dumps({"type": "prompt", "message": prompt_text}), flush=True)
     return sys.stdin.readline().strip()
 
+def timed_stdin_readline(timeout_seconds, progress_interval=15):
+    """Read one stdin line with a timeout that works with Electron pipes."""
+    result_queue = queue.Queue(maxsize=1)
+
+    def read_line():
+        try:
+            result_queue.put(sys.stdin.readline().strip())
+        except Exception:
+            result_queue.put(None)
+
+    reader = threading.Thread(target=read_line, daemon=True)
+    reader.start()
+
+    deadline = time.time() + timeout_seconds
+    next_progress = time.time() + progress_interval
+
+    while time.time() < deadline:
+        remaining = max(0, int(deadline - time.time()))
+        try:
+            return result_queue.get(timeout=0.5)
+        except queue.Empty:
+            if remaining > 0 and time.time() >= next_progress:
+                print(f"{Fore.CYAN}Timer: {remaining}s remaining... Waiting for OTP.")
+                next_progress += progress_interval
+
+    return None
+
 print = custom_print
 input = custom_input
 
@@ -88,19 +115,34 @@ print("Waiting for configuration JSON on stdin...")
 # Global state for cleanup
 _reserved_tickets_for_cleanup = []
 
+def normalize_desired_seats(raw_value):
+    """Return trimmed, non-empty seat names from a comma-separated value."""
+    if not raw_value:
+        return []
+    return [seat.strip() for seat in str(raw_value).split(',') if seat.strip()]
+
+def release_reserved_tickets(reason=""):
+    """Release any reserved seats that have not been confirmed yet."""
+    global _reserved_tickets_for_cleanup
+    if not _reserved_tickets_for_cleanup:
+        return
+
+    reason_text = f" {reason}" if reason else ""
+    tickets_to_release = list(_reserved_tickets_for_cleanup)
+    print(f"{Fore.YELLOW}Releasing {len(tickets_to_release)} reserved seats.{reason_text}")
+
+    for ticket_id in tickets_to_release:
+        try:
+            api_request("PATCH", "/v1.0/web/bookings/release-seat", json_data={"ticket_id": ticket_id, "route_id": trip_route_id})
+        except Exception as e:
+            print(f"{Fore.YELLOW}Could not release seat {ticket_id}: {e}")
+
+    _reserved_tickets_for_cleanup = []
+    print(f"{Fore.GREEN}Reserved seat cleanup completed.")
+
 def cleanup_on_exit(sig=None, frame=None):
     """Gracefully release seats and invalidate turnstile on exit/stop."""
-    global _reserved_tickets_for_cleanup
-    if _reserved_tickets_for_cleanup:
-        print(f"{Fore.YELLOW}Stop requested. Releasing {len(_reserved_tickets_for_cleanup)} reserved seats...")
-        for ticket_id in _reserved_tickets_for_cleanup:
-            try:
-                # We use a simplified api_request logic here or call it directly
-                # to avoid issues if the main loop is stuck
-                api_request("PATCH", "/v1.0/web/bookings/release-seat", json_data={"ticket_id": ticket_id, "route_id": trip_route_id})
-            except:
-                pass
-        print(f"{Fore.GREEN}Seats released successfully.")
+    release_reserved_tickets("Stop requested.")
     
     try:
         invalidate_turnstile()
@@ -135,7 +177,8 @@ seat_class = config.get("SEAT_CLASS")
 train_number = int(config.get("TRAIN_NUMBER", 0))
 max_selectable_seat = int(config.get("MAX_SELECTABLE_SEAT", 1))
 desired_seats_raw = config.get("DESIRED_SEATS", "")
-desired_seats = desired_seats_raw.split(',') if desired_seats_raw else []
+desired_seats = normalize_desired_seats(desired_seats_raw)
+flexible_seat_count = bool(config.get("FLEXIBLE_SEAT_COUNT", False))
 mobile_number = config.get("MOBILE_NUMBER")
 password = config.get("PASSWORD")
 LOGIN_ONLY = config.get("LOGIN_ONLY", False)
@@ -182,7 +225,7 @@ def get_ws_url(force=False):
     for attempt in range(5):
         try:
             req = urllib.request.Request('http://localhost:9222/json')
-            with urllib.request.urlopen(req, timeout=5) as response:
+            with urllib.request.urlopen(req, timeout=2) as response:
                 browsers = json.loads(response.read())
                 # Prefer the eticket page
                 for browser in browsers:
@@ -198,7 +241,7 @@ def get_ws_url(force=False):
                         return _cached_ws_url
         except:
             pass
-        time.sleep(1)
+        time.sleep(0.3)
     return None
 
 
@@ -221,14 +264,30 @@ def exec_js(ws_url, js, await_promise=False, _retries=3):
                 new_url = get_ws_url(force=True)
                 if new_url:
                     ws_url = new_url
-                time.sleep(1)
+                time.sleep(0.5)
             else:
                 raise
 
 
+def wait_for_js_value(ws_url, js, timeout=10, interval=0.5, refresh_ws=False):
+    """Poll a browser expression until it returns a truthy value."""
+    deadline = time.time() + timeout
+    current_ws = ws_url
+    while time.time() < deadline:
+        try:
+            if refresh_ws:
+                current_ws = get_ws_url(force=True) or current_ws
+            value = exec_js(current_ws, js)
+            if value:
+                return current_ws, value
+        except:
+            pass
+        time.sleep(interval)
+    return current_ws, None
+
+
 def get_turnstile_token(ws_url, force=False):
-    """Get a fresh Turnstile token. These tokens are SINGLE-USE, so we always
-    need a fresh one and must trigger a reset after reading."""
+    """Read the current Turnstile token without forcing widget resets."""
     global _cached_turnstile, _cached_turnstile_time
 
     # If we have a cached token that hasn't been used yet, return it
@@ -250,24 +309,10 @@ def get_turnstile_token(ws_url, force=False):
         const now = Date.now();
         const age = lastTime ? (now - parseInt(lastTime)) / 1000 : 999;
 
-        // If token is stale (>240s), force a reset now
-        if (token && age > 240 && window.turnstile) {
-            try { 
-                turnstile.reset();
-                localStorage.removeItem('last_seen_cft');
-                localStorage.removeItem('last_cft_time');
-                return "RESET_TRIGGERED";
-            } catch(e) {}
-        }
-
         return JSON.stringify({token: token, age: age});
     })()'''
 
     result_str = exec_js(ws_url, js)
-    if result_str == "RESET_TRIGGERED":
-        print(f"{Fore.YELLOW}Turnstile token was stale. Triggered reset, waiting for new one...")
-        time.sleep(3)
-        return get_turnstile_token(ws_url, force=True)
 
     try:
         result = json.loads(result_str)
@@ -279,14 +324,11 @@ def get_turnstile_token(ws_url, force=False):
     except:
         pass
 
-    # Token not available — maybe Turnstile hasn't loaded or is regenerating
-    # Wait briefly and try once more
-    time.sleep(2)
-    simple_js = '''(() => {
+    # Token not available yet; poll briefly instead of resetting the widget.
+    _, token = wait_for_js_value(ws_url, '''(() => {
         const inp = document.querySelector('input[name="cf-turnstile-response"]');
-        return inp ? inp.value : null;
-    })()'''
-    token = exec_js(ws_url, simple_js)
+        return inp && inp.value ? inp.value : null;
+    })()''', timeout=3, interval=0.5)
     return token
 
 
@@ -412,20 +454,6 @@ def api_request(method, path, params=None, json_data=None):
             result = json.loads(result_str)
             status = result.get('s')
             
-            if status == 422:
-                body_lower = result.get('b', '').lower()
-                # If the error is about seat availability, don't invalidate Turnstile
-                if any(kw in body_lower for kw in ['seat', 'available', 'not found', 'taken', 'reserved']):
-                    print(f"{Fore.YELLOW}No seat available (422). Waiting for seats to become available...")
-                    return result
-                    
-                print(f"{Fore.YELLOW}Warning: Received 422 (Unprocessable Entity). Turnstile token might be invalid.")
-                if attempt == 0:
-                    print(f"{Fore.CYAN}Invalidating Turnstile token and retrying request... (Attempt {attempt+1}/2)")
-                    invalidate_turnstile()
-                    time.sleep(2) # Give it a moment to reset
-                    continue
-            
             return result
         except Exception as e:
             print(f"{Fore.RED}Error parsing API result: {e}")
@@ -485,11 +513,10 @@ def auto_login_if_needed(ws_url):
         passField.dispatchEvent(new Event('input', {{ bubbles: true }}));
         passField.dispatchEvent(new Event('change', {{ bubbles: true }}));
 
-        // Wait for Cloudflare Turnstile to load and complete verification
-        // The challenge widget needs time to render and solve
+        // Wait briefly for Turnstile to finish if it is already close to ready.
         let turnstileReady = false;
-        for (let i = 0; i < 15; i++) {{
-            await new Promise(r => setTimeout(r, 1000));
+        for (let i = 0; i < 10; i++) {{
+            await new Promise(r => setTimeout(r, 500));
             const cft = document.querySelector('input[name="cf-turnstile-response"]');
             if (cft && cft.value && cft.value.length > 10) {{
                 turnstileReady = true;
@@ -498,7 +525,7 @@ def auto_login_if_needed(ws_url):
         }}
 
         if (!turnstileReady) {{
-            return JSON.stringify({{ok: false, msg: 'Cloudflare Turnstile did not load in 15s'}});
+            return JSON.stringify({{ok: false, msg: 'Turnstile token was not ready'}});
         }}
 
         // Find and click the submit button
@@ -541,10 +568,9 @@ def auto_login_if_needed(ws_url):
         except:
             print(f"{Fore.YELLOW}Login submitted (raw: {result})")
 
-    # Wait for login to complete — the site may open a new tab or redirect
-    for i in range(30):
-        time.sleep(1)
-
+    # Wait for login to complete — the site may open a new tab or redirect.
+    deadline = time.time() + 20
+    while time.time() < deadline:
         # After login, the WS URL may have changed. Re-discover all tabs.
         new_ws = get_ws_url(force=True)
 
@@ -589,7 +615,7 @@ def auto_login_if_needed(ws_url):
                     print(f"{Fore.YELLOW}Redirected to: {cur}. Navigating to eticket site...")
                     search_url = f"https://eticket.railway.gov.bd/booking/train/search?fromcity={from_city}&tocity={to_city}&doj={date_of_journey}&class={seat_class}"
                     exec_js(new_ws, f"location.href = '{search_url}'")
-                    time.sleep(5)  # Wait for navigation and Angular to load
+                    wait_for_js_value(new_ws, "document.readyState === 'complete'", timeout=5, interval=0.5, refresh_ws=True)
                     # Re-discover the page
                     _cached_ws_url = None
                     _cached_ws_url_time = 0
@@ -605,7 +631,9 @@ def auto_login_if_needed(ws_url):
             except:
                 pass
 
-    print(f"{Fore.RED}Login timed out after 30s. Please log in manually.")
+        time.sleep(0.5)
+
+    print(f"{Fore.RED}Login timed out after 20s. Please log in manually.")
 
 
 def fetch_auth_key():
@@ -720,13 +748,10 @@ def is_booking_available():
                     print(f"{Fore.RED}FATAL: You have reached the maximum ticket booking limit.")
                     sys.exit(1)
 
-                # --- RETRYABLE: Turnstile token issues (single-use, needs regeneration) ---
+                # --- RETRYABLE: Page verification issues ---
                 if error_key in ("TURNSTILE_TOKEN_REQUIRED", "TURNSTILE_VERIFICATION_FAILED"):
-                    print(f"{Fore.YELLOW}Turnstile token expired/invalid. Waiting for new token...")
-                    invalidate_turnstile()
-                    # Wait for Turnstile widget to regenerate a fresh token
+                    print(f"{Fore.YELLOW}Page verification token not accepted. Waiting before retry...")
                     time.sleep(3)
-                    # Don't count this as a failure — it's expected with single-use tokens
                     continue
 
                 # --- RETRYABLE: Booking window not open yet ---
@@ -744,7 +769,6 @@ def is_booking_available():
                     print(f"{Fore.YELLOW}Rate limited: {error_message}. Waiting {total_wait}s until {future}...")
                     # Wait the specified time, then retry (don't exit!)
                     time.sleep(min(total_wait + 1, 600))  # Cap at 10 min
-                    invalidate_turnstile()  # Refresh turnstile after waiting
                     consecutive_failures = 0
                     continue
 
@@ -755,21 +779,17 @@ def is_booking_available():
                 print(f"{Fore.CYAN}Full 422 body: {r['b'][:500]}")
 
                 if consecutive_failures >= MAX_TRANSIENT_RETRIES:
-                    print(f"{Fore.YELLOW}Hit {MAX_TRANSIENT_RETRIES} consecutive 422 errors. Resetting and continuing...")
+                    print(f"{Fore.YELLOW}Hit {MAX_TRANSIENT_RETRIES} consecutive 422 errors. Pausing and continuing...")
                     consecutive_failures = 0
-                    invalidate_turnstile()
                     time.sleep(10)
 
-                # Refresh turnstile token — stale token is a common cause
-                invalidate_turnstile()
-                print(f"{Fore.YELLOW}Refreshing turnstile token and retrying in {backoff}s...")
+                print(f"{Fore.YELLOW}Retrying in {backoff}s...")
                 time.sleep(backoff)
                 continue
 
             except json.JSONDecodeError:
                 consecutive_failures += 1
                 print(f"{Fore.RED}422 response not valid JSON: {r['b'][:300]}")
-                invalidate_turnstile()
                 time.sleep(5)
                 continue
 
@@ -777,7 +797,6 @@ def is_booking_available():
                 consecutive_failures += 1
                 print(f"{Fore.RED}Error parsing 422 response: {e}")
                 print(f"{Fore.CYAN}Raw body: {r['b'][:300]}")
-                invalidate_turnstile()
                 time.sleep(5)
                 continue
 
@@ -786,10 +805,14 @@ def is_booking_available():
             time.sleep(3)
 
         elif r['s'] == 403:
-            print(f"{Fore.RED}403 Forbidden — likely Cloudflare/Turnstile block. Refreshing tokens...")
+            print(f"{Fore.RED}403 Forbidden.")
             print(f"{Fore.CYAN}Body: {r['b'][:300]}")
-            invalidate_turnstile()
             time.sleep(5)
+
+        elif isinstance(r.get('s'), int) and 400 <= r['s'] < 500:
+            print(f"{Fore.RED}Client error HTTP {r['s']}. Retrying in 3s...")
+            print(f"{Fore.CYAN}Body: {r['b'][:300]}")
+            time.sleep(3)
 
         else:
             print(f"{Fore.RED}Unexpected HTTP {r['s']}. Retrying in 3s...")
@@ -797,7 +820,7 @@ def is_booking_available():
             time.sleep(3)
 
 
-def get_ticket_ids_from_layout(seat_layout, desired_seats, max_selectable_seat):
+def get_ticket_ids_from_layout(seat_layout, desired_seats, max_selectable_seat, allow_flexible=False):
     if not seat_layout:
         print(f"{Fore.RED}No seat layout available.")
         return None
@@ -832,10 +855,26 @@ def get_ticket_ids_from_layout(seat_layout, desired_seats, max_selectable_seat):
         print(f"{Fore.RED}No seats available to proceed.")
         return None
 
+    if len(selected_seat_details) < max_selectable_seat and not allow_flexible:
+        print(f"{Fore.YELLOW}Only {len(selected_seat_details)} matching seats found; strict mode requires {max_selectable_seat}.")
+        return None
+
     if len(selected_seat_details) < max_selectable_seat:
         print(f"{Fore.YELLOW}Warning: Proceeding with {len(selected_seat_details)} seats instead of {max_selectable_seat}")
     
     return selected_seat_details
+
+
+def release_ticket_ids(ticket_ids, reason=""):
+    if not ticket_ids:
+        return
+    reason_text = f" {reason}" if reason else ""
+    print(f"{Fore.YELLOW}Releasing {len(ticket_ids)} reserved seats.{reason_text}")
+    for ticket_id in ticket_ids:
+        try:
+            api_request("PATCH", "/v1.0/web/bookings/release-seat", json_data={"ticket_id": ticket_id, "route_id": trip_route_id})
+        except Exception as e:
+            print(f"{Fore.YELLOW}Could not release seat {ticket_id}: {e}")
 
 
 def reserve_seat():
@@ -858,10 +897,10 @@ def reserve_seat():
                         total_available += 1
         print(f"{Fore.CYAN}Total available seats in layout: {total_available}")
 
-        ticket_id_map = get_ticket_ids_from_layout(seat_layout, desired_seats, max_selectable_seat)
+        ticket_id_map = get_ticket_ids_from_layout(seat_layout, desired_seats, max_selectable_seat, flexible_seat_count)
         if not ticket_id_map:
-            print(f"{Fore.RED}No matching seats found. Retrying in 2s...")
-            time.sleep(2)
+            print(f"{Fore.RED}No matching seat group found. Retrying in 1s...")
+            time.sleep(1)
             continue
 
         ticket_ids = list(ticket_id_map.keys())
@@ -888,12 +927,16 @@ def reserve_seat():
                 status = r['s'] if r else 'No response'
                 print(f"{Fore.RED}Error: {status} - {r.get('b','')[:200] if r else ''}")
 
-        if successful:
+        if successful and (flexible_seat_count or len(successful) == max_selectable_seat):
             print(f"{Fore.GREEN}Successfully reserved {len(successful)} seats: {', '.join([ticket_id_map[t] for t in successful])}")
             return successful, ticket_id_map
+        elif successful:
+            print(f"{Fore.YELLOW}Strict mode reserved only {len(successful)} of {max_selectable_seat}. Releasing and retrying...")
+            release_ticket_ids(successful, "Strict count not met.")
+            time.sleep(1)
         else:
-            print(f"{Fore.RED}No seats could be reserved. Re-fetching seat layout in 2s...")
-            time.sleep(2)
+            print(f"{Fore.RED}No seats could be reserved. Re-fetching seat layout in 1s...")
+            time.sleep(1)
 
 
 def ensure_on_search_page():
@@ -909,17 +952,16 @@ def ensure_on_search_page():
         return
 
     search_url = f"https://eticket.railway.gov.bd/booking/train/search?fromcity={from_city}&tocity={to_city}&doj={date_of_journey}&class={seat_class}"
-    print(f"{Fore.YELLOW}Navigating browser to search page (needed for Turnstile token)...")
+    print(f"{Fore.YELLOW}Navigating browser to search page...")
     exec_js(ws_url, f"location.href = '{search_url}'")
 
-    # Wait for page load and turnstile widget to initialize
-    for i in range(20):
-        time.sleep(1)
+    # Wait for page load and token watcher without forcing widget resets.
+    deadline = time.time() + 8
+    while time.time() < deadline:
         try:
             ws_url = get_ws_url(force=True)
             if not ws_url:
                 continue
-            # Inject watcher
             exec_js(ws_url, WATCHER_JS)
             
             res_str = exec_js(ws_url, '''(() => {
@@ -934,20 +976,17 @@ def ensure_on_search_page():
                 token = res.get('token')
                 age = res.get('age', 999)
                 
-                if token and age < 30: # Use a very fresh token for the first search
-                    print(f"{Fore.GREEN}Fresh Turnstile token ready (age: {age:.1f}s)!")
+                if token and age < TURNSTILE_TTL:
+                    print(f"{Fore.GREEN}Page verification token ready (age: {age:.1f}s).")
                     invalidate_turnstile()
                     return
-                elif token and age >= 30:
-                    print(f"{Fore.YELLOW}Token is too old ({age:.1f}s). Forcing reset...")
-                    exec_js(ws_url, "if(window.turnstile) turnstile.reset(); localStorage.removeItem('last_cft_time');")
-                    time.sleep(2)
             except:
                 pass
         except:
             pass
+        time.sleep(0.5)
 
-    print(f"{Fore.YELLOW}Turnstile widget may not have loaded. Continuing anyway...")
+    print(f"{Fore.YELLOW}Page verification token was not ready. Continuing anyway...")
 
 
 def _find_chrome_binary():
@@ -1035,13 +1074,19 @@ def _kill_chrome_on_port(port):
             subprocess.run(['pkill', '-f', f'remote-debugging-port={port}'],
                            capture_output=True, timeout=5)
 
-    time.sleep(2)
+    deadline = time.time() + 3
+    while time.time() < deadline:
+        try:
+            req = urllib.request.Request(f'http://localhost:{port}/json/version')
+            urllib.request.urlopen(req, timeout=0.5)
+        except:
+            return
+        time.sleep(0.2)
 
 
 def launch_chrome():
-    """Launch Chrome with remote debugging, killing any existing debug session first.
-    Clears user-data-dir for a clean session (forces fresh login).
-    Works on Linux, macOS, and Windows."""
+    """Launch or reuse Chrome with remote debugging.
+    Reusing the browser/profile avoids unnecessary resets and starts faster."""
     CHROME_DEBUG_PORT = 9222
     CHROME_USER_DATA = os.path.join(tempfile.gettempdir(), 'chrome-debug')
 
@@ -1061,13 +1106,8 @@ def launch_chrome():
             print(f"{Fore.GREEN}Active Chrome session with valid token detected. Reusing existing session.")
             return True
         else:
-            print(f"{Fore.YELLOW}Chrome debug port {CHROME_DEBUG_PORT} already open but no session found. Killing existing session...")
-            _kill_chrome_on_port(CHROME_DEBUG_PORT)
-
-    # Clean user data for fresh session
-    if os.path.exists(CHROME_USER_DATA):
-        print(f"{Fore.YELLOW}Clearing Chrome user data for clean session...")
-        shutil.rmtree(CHROME_USER_DATA, ignore_errors=True)
+            print(f"{Fore.YELLOW}Chrome debug port {CHROME_DEBUG_PORT} already open. Reusing it for login.")
+            return True
 
     # Find Chrome binary
     chrome_bin = _find_chrome_binary()
@@ -1075,7 +1115,7 @@ def launch_chrome():
         print(f"{Fore.RED}Chrome not found! Please install Google Chrome.")
         return False
 
-    # Launch Chrome — window pushed off-screen so it doesn't distract the user
+    # Launch Chrome normally so interactive checks can complete without off-screen behavior.
     print(f"{Fore.CYAN}Launching Chrome ({chrome_bin}) with remote debugging on port {CHROME_DEBUG_PORT}...")
     chrome_cmd = [
         chrome_bin,
@@ -1084,9 +1124,7 @@ def launch_chrome():
         '--remote-allow-origins=*',
         '--no-first-run',
         '--no-default-browser-check',
-        '--window-position=-32000,-32000',
-        '--window-size=1920,1080',
-        '--disable-focus-on-launch',
+        '--window-size=1280,900',
         'https://eticket.railway.gov.bd/'
     ]
 
@@ -1103,7 +1141,6 @@ def launch_chrome():
     # Wait for Chrome to be ready
     print(f"{Fore.YELLOW}Waiting for Chrome to start...")
     for i in range(30):
-        time.sleep(1)
         if port_is_open():
             print(f"{Fore.GREEN}Chrome is ready on port {CHROME_DEBUG_PORT}!")
             # Invalidate any stale cached WS URL
@@ -1111,7 +1148,8 @@ def launch_chrome():
             _cached_ws_url = None
             _cached_ws_url_time = 0
             return True
-    print(f"{Fore.RED}Chrome failed to start within 30s.")
+        time.sleep(0.5)
+    print(f"{Fore.RED}Chrome failed to start within 15s.")
     return False
 
 
@@ -1119,26 +1157,20 @@ def fresh_login():
     """Open homepage first, wait for it to load, click Login link,
     then fill credentials and submit. This ensures Cloudflare loads properly.
     
-    Key insight: Cloudflare Turnstile MUST fully solve its challenge before
-    we attempt to submit the login form. We wait for the hidden
-    cf-turnstile-response input to contain a valid token."""
+    Key insight: wait for real page readiness instead of using long fixed sleeps."""
     print(f"{Fore.CYAN}Starting fresh login...")
 
-    # Step 0: Clear existing session data
+    # Step 0: Reuse any existing browser state. Avoid clearing storage unless the
+    # site itself invalidates the session.
     ws_url = get_ws_url()
-    if ws_url:
-        print(f"{Fore.YELLOW}Step 0/6: Clearing existing browser session data...")
-        exec_js(ws_url, "localStorage.clear(); sessionStorage.clear();")
-        time.sleep(2)
 
     # Step 1: Wait for homepage to fully load (Angular bootstrap + Cloudflare JS)
     print(f"{Fore.YELLOW}Step 1/6: Waiting for homepage to load...")
-    time.sleep(12)  # Give the Angular app + Cloudflare scripts time to bootstrap
-
     ws_url = get_ws_url(force=True)
     if not ws_url:
         print(f"{Fore.RED}Cannot connect to Chrome for login.")
         return False
+    ws_url, _ = wait_for_js_value(ws_url, "document.readyState === 'complete' || document.readyState === 'interactive'", timeout=8, interval=0.5, refresh_ws=True)
 
     current = exec_js(ws_url, "location.href")
     print(f"{Fore.CYAN}Current page: {current}")
@@ -1177,8 +1209,13 @@ def fresh_login():
             print(f"{Fore.YELLOW}No login link found, navigating directly...")
             exec_js(ws_url, "location.href = 'https://eticket.railway.gov.bd/login'")
 
-        time.sleep(10)  # Wait for navigation and page load
-        ws_url = get_ws_url(force=True)
+        ws_url, _ = wait_for_js_value(
+            ws_url,
+            "location.href.includes('/login') || document.querySelectorAll('input').length >= 2",
+            timeout=8,
+            interval=0.5,
+            refresh_ws=True
+        )
         if not ws_url:
             return False
     else:
@@ -1186,32 +1223,20 @@ def fresh_login():
 
     # Step 3: Wait for login form to fully render (Angular app)
     print(f"{Fore.YELLOW}Step 3/6: Waiting for login form to render...")
-    form_loaded = False
-    for i in range(20):
-        try:
-            ws_url = get_ws_url(force=True) or ws_url
-            has_form = exec_js(ws_url, '''(() => {
-                const inputs = document.querySelectorAll('input');
-                return inputs.length >= 2;
-            })()''')
-            if has_form:
-                print(f"{Fore.GREEN}Login form detected!")
-                form_loaded = True
-                break
-        except:
-            pass
-        time.sleep(3)
+    ws_url, form_loaded = wait_for_js_value(ws_url, '''(() => {
+        const inputs = document.querySelectorAll('input');
+        return inputs.length >= 2;
+    })()''', timeout=12, interval=0.5, refresh_ws=True)
 
     if not form_loaded:
-        print(f"{Fore.RED}Login form did not load within 60s.")
+        print(f"{Fore.RED}Login form did not load within 12s.")
         return False
+    print(f"{Fore.GREEN}Login form detected!")
 
-    # Step 4: Wait for Cloudflare Turnstile challenge to solve BEFORE filling creds.
-    # This is the critical step — Turnstile needs the page visible (non-headless)
-    # and time to render the iframe, run the challenge, and populate the hidden input.
-    print(f"{Fore.YELLOW}Step 4/6: Waiting for Cloudflare Turnstile challenge to solve...")
+    # Step 4: Wait briefly for the page's own challenge widget to become ready.
+    print(f"{Fore.YELLOW}Step 4/6: Waiting for page verification token...")
     turnstile_solved = False
-    for attempt in range(30):  # Up to 30s for Turnstile
+    for attempt in range(24):  # Up to 12s.
         try:
             token_status = exec_js(ws_url, '''(() => {
                 const iframe = document.querySelector('iframe[src*="turnstile"]');
@@ -1227,19 +1252,19 @@ def fresh_login():
             if token_status:
                 status = json.loads(token_status)
                 if status.get('hasToken'):
-                    print(f"{Fore.GREEN}Turnstile challenge solved! (token length: {status['tokenLen']})")
+                    print(f"{Fore.GREEN}Verification token ready! (token length: {status['tokenLen']})")
                     turnstile_solved = True
                     break
                 else:
                     detail = f"iframe={'✓' if status.get('iframeFound') else '✗'}, input={'✓' if status.get('inputFound') else '✗'}"
                     if attempt % 5 == 0:
-                        print(f"{Fore.YELLOW}  Turnstile solving... ({detail}) [{attempt+1}/30]")
+                        print(f"{Fore.YELLOW}  Page verification pending... ({detail}) [{attempt+1}/24]")
         except:
             pass
-        time.sleep(1)
+        time.sleep(0.5)
 
     if not turnstile_solved:
-        print(f"{Fore.RED}Turnstile challenge did not solve within 30s. Proceeding anyway (may fail)...")
+        print(f"{Fore.RED}Verification token was not ready within 12s. Proceeding anyway (may fail)...")
 
     # Step 5: Fill credentials and submit
     print(f"{Fore.YELLOW}Step 5/6: Filling credentials and submitting...")
@@ -1247,8 +1272,8 @@ def fresh_login():
 
     # Step 6: Verify login succeeded — wait for token in localStorage
     print(f"{Fore.YELLOW}Step 6/6: Verifying login...")
-    for i in range(30):
-        time.sleep(1)
+    deadline = time.time() + 20
+    while time.time() < deadline:
         try:
             ws_url = get_ws_url(force=True)
             if not ws_url:
@@ -1259,19 +1284,15 @@ def fresh_login():
                 return True
         except:
             pass
+        time.sleep(0.5)
 
-    print(f"{Fore.RED}Login did not complete within 30s.")
+    print(f"{Fore.RED}Login did not complete within 20s.")
     return False
 
 
 def main():
-    global trip_id, trip_route_id, boarding_point_id, train_name
+    global trip_id, trip_route_id, boarding_point_id, train_name, _reserved_tickets_for_cleanup
     try:
-        # Check for schedule first
-        schedule_time = config.get('SCHEDULE_TIME')
-        if schedule_time:
-            wait_for_schedule(schedule_time)
-
         # --- Step 0: Launch Chrome and verify or perform login ---
         if not launch_chrome():
             print(f"{Fore.RED}Failed to launch Chrome. Exiting.")
@@ -1319,6 +1340,12 @@ def main():
 
         user_email, user_phone, user_name = extract_user_info_from_token(auth_key)
 
+        # Scheduling applies only to booking actions. Login/session refresh happens immediately.
+        schedule_time = config.get('SCHEDULE_TIME')
+        if schedule_time:
+            print(f"{Fore.CYAN}Pre-login is ready. Waiting for scheduled booking time before searching seats.")
+            wait_for_schedule(schedule_time)
+
         # Navigate to search page so Turnstile token is available
         ensure_on_search_page()
 
@@ -1348,6 +1375,7 @@ def main():
         max_otp_attempts = 3
         otp = ""
         otp_timeout = 120 # 2 minutes
+        otp_verified = False
         
         for attempt in range(max_otp_attempts):
             prompt_text = f"Enter the OTP received (Attempt {attempt+1}/{max_otp_attempts})"
@@ -1356,34 +1384,28 @@ def main():
             
             print(f"{Fore.YELLOW}Timer: 120s remaining. Please enter OTP now...")
             
-            # Timed input using select
-            start_time = time.time()
-            otp = None
-            while True:
-                elapsed = time.time() - start_time
-                remaining = int(otp_timeout - elapsed)
-                
-                if remaining <= 0:
-                    print(f"{Fore.RED}Time exceeded (2 minutes reached)! OTP is likely invalid now.")
-                    return
-                
-                # Check for input every 0.5s to keep responsiveness
-                rlist, _, _ = select.select([sys.stdin], [], [], 0.5)
-                if rlist:
-                    otp = sys.stdin.readline().strip()
-                    break
-                
-                # Print countdown update every 15s to keep user informed
-                if remaining % 15 == 0 and remaining < otp_timeout:
-                    print(f"{Fore.CYAN}Timer: {remaining}s remaining... Waiting for OTP.")
+            otp = timed_stdin_readline(otp_timeout)
+            if otp is None:
+                print(f"{Fore.RED}Time exceeded (2 minutes reached)! OTP is likely invalid now.")
+                builtins.print(json.dumps({"type": "prompt", "message": ""}), flush=True)
+                return
 
-            if not otp: continue
+            if not otp:
+                print(f"{Fore.RED}Blank OTP submitted.")
+                if attempt < max_otp_attempts - 1:
+                    print(f"{Fore.YELLOW}Please enter the OTP to continue.")
+                    continue
+                print(f"{Fore.RED}Maximum OTP attempts reached. Process terminated.")
+                builtins.print(json.dumps({"type": "prompt", "message": ""}), flush=True)
+                return
 
             verify_payload = {**otp_payload, "otp": otp}
             r = api_request("POST", "/v1.0/web/bookings/verify-otp", json_data=verify_payload)
             
             if r and r['s'] == 200:
                 print(f"{Fore.GREEN}OTP verified successfully!")
+                otp_verified = True
+                builtins.print(json.dumps({"type": "prompt", "message": ""}), flush=True)
                 break
             else:
                 status = r['s'] if r else 'No response'
@@ -1403,10 +1425,14 @@ def main():
                     print(f"{Fore.YELLOW}Giving you another chance to enter the correct OTP...")
                 else:
                     print(f"{Fore.RED}Maximum OTP attempts reached. Process terminated.")
+                    builtins.print(json.dumps({"type": "prompt", "message": ""}), flush=True)
                     return
         # -----------------------------
 
-        print(f"{Fore.GREEN}OTP verified successfully!")
+        if not otp_verified:
+            print(f"{Fore.RED}OTP was not verified. Process terminated.")
+            builtins.print(json.dumps({"type": "prompt", "message": ""}), flush=True)
+            return
 
         # Collect passenger names for multi-seat bookings
         passenger_names = [user_name]
@@ -1442,11 +1468,11 @@ def main():
 
         r = api_request("PATCH", "/v1.0/web/bookings/confirm", json_data=confirm_payload)
         if r and r['s'] == 200:
-            _reserved_tickets_for_cleanup = [] # Clear cleanup list as they are now confirmed
             try:
                 data = json.loads(r['b'])
                 if "redirectUrl" in data.get("data", {}):
                     url = data["data"]["redirectUrl"]
+                    _reserved_tickets_for_cleanup = [] # Clear cleanup list as they are now confirmed
                     print("Booking confirmed successfully!")
                     print("IMPORTANT: This payment link can be used ONLY ONCE.")
                     # Emit specialized JSON event for UI
@@ -1462,6 +1488,8 @@ def main():
         import traceback
         traceback.print_exc()
         print(f"{Fore.RED}An unexpected error occurred: {e}")
+    finally:
+        release_reserved_tickets("Process ended before booking confirmation.")
 
 if __name__ == "__main__":
     main()
