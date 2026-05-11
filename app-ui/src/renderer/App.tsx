@@ -15,6 +15,7 @@ export default function App() {
         TRAIN_NUMBER: '771',
         MAX_SELECTABLE_SEAT: '1',
         DESIRED_SEATS: '',
+        SCHEDULE_TIME: '',
     });
 
     const [logs, setLogs] = useState<{ type: string; message: string; level?: string }[]>([]);
@@ -32,17 +33,26 @@ export default function App() {
         // Check localStorage for credentials
         const savedMobile = localStorage.getItem('raleway_mobile');
         const savedPassword = localStorage.getItem('raleway_password');
+        const lastConfig = localStorage.getItem('raleway_last_config');
 
         if (savedMobile && savedPassword) {
-            // Need an async effect for decrypting the password
             (async () => {
                 let decodedPassword = savedPassword;
                 if (window.electronAPI && window.electronAPI.safeDecrypt) {
-                    decodedPassword = await window.electronAPI.safeDecrypt(savedPassword);
+                    try {
+                        decodedPassword = await window.electronAPI.safeDecrypt(savedPassword);
+                    } catch (e) { console.error("Decryption failed", e); }
                 }
                 setConfig((prev) => ({ ...prev, MOBILE_NUMBER: savedMobile, PASSWORD: decodedPassword }));
                 setShowOnboarding(false);
             })();
+        }
+
+        if (lastConfig) {
+            try {
+                const parsed = JSON.parse(lastConfig);
+                setConfig(prev => ({ ...prev, ...parsed }));
+            } catch (e) { console.error("Failed to parse last config", e); }
         }
 
         if (window.electronAPI) {
@@ -64,6 +74,12 @@ export default function App() {
             return cleanup;
         }
     }, []);
+
+    // Save configuration changes to localStorage (excluding sensitive info handled elsewhere)
+    useEffect(() => {
+        const { MOBILE_NUMBER, PASSWORD, DATE_OF_JOURNEY, ...persistentConfig } = config;
+        localStorage.setItem('raleway_last_config', JSON.stringify(persistentConfig));
+    }, [config.FROM_CITY, config.TO_CITY, config.SEAT_CLASS, config.TRAIN_NUMBER, config.MAX_SELECTABLE_SEAT, config.DESIRED_SEATS, config.SCHEDULE_TIME]);
 
     useEffect(() => {
         logsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -101,7 +117,7 @@ export default function App() {
         setIsRunning(true);
         setActiveTask('login');
         if (window.electronAPI) {
-            const res = await window.electronAPI.startBooking({ ...config, LOGIN_ONLY: true });
+            const res = await window.electronAPI.startBooking({ ...config, LOGIN_ONLY: true, REFRESH_LOGIN: true });
             if (!res.success) {
                 setLogs((prev) => [...prev, { type: 'log', level: 'error', message: res.error || 'Failed to start login' }]);
                 setIsRunning(false);
@@ -336,6 +352,18 @@ export default function App() {
                                         value={config.DESIRED_SEATS}
                                         onChange={(e) => setConfig({ ...config, DESIRED_SEATS: e.target.value })}
                                     />
+                                </div>
+
+                                 <div className="mb-4">
+                                    <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1">Schedule Time (Optional)</label>
+                                    <input
+                                        type="time"
+                                        step="1"
+                                        className="w-full bg-gray-950 border border-gray-700 rounded p-2.5 text-sm focus:border-green-500 focus:ring-1 focus:ring-green-500 outline-none transition-colors"
+                                        value={config.SCHEDULE_TIME}
+                                        onChange={(e) => setConfig({ ...config, SCHEDULE_TIME: e.target.value })}
+                                    />
+                                    <p className="text-[10px] text-gray-500 mt-1 italic">Process will wait until this time to start booking.</p>
                                 </div>
 
                                 <div className="flex gap-3 pt-2">

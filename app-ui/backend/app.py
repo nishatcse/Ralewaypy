@@ -4,7 +4,60 @@ import subprocess, shutil, signal, tempfile, platform
 import websocket
 import sys
 import builtins
-from datetime import datetime
+from datetime import datetime, timedelta
+
+def wait_for_schedule(schedule_time_str):
+    """Wait until the specified time (HH:MM:SS) before proceeding."""
+    if not schedule_time_str:
+        return
+    
+    try:
+        parts = list(map(int, schedule_time_str.split(':')))
+        now = datetime.now()
+        # Set target to today
+        target = now.replace(hour=parts[0], minute=parts[1], second=parts[2] if len(parts) > 2 else 0, microsecond=0)
+        
+        # If target is more than 30 mins in the past, assume it's for tomorrow
+        if target < (now - timedelta(minutes=30)):
+            target += timedelta(days=1)
+            print(f"{Fore.CYAN}Target time {schedule_time_str} is in the past. Scheduling for tomorrow.")
+        elif target < now:
+            print(f"{Fore.YELLOW}Target time {schedule_time_str} is very close or just passed. Starting now.")
+            return
+
+        print(f"{Fore.CYAN}--- BOOKING SCHEDULED ---")
+        print(f"{Fore.CYAN}Target Time: {target.strftime('%I:%M:%S %p')}")
+        print(f"{Fore.CYAN}Current Time: {now.strftime('%I:%M:%S %p')}")
+        
+        last_print_time = 0
+        while datetime.now() < target:
+            current_now = datetime.now()
+            diff = (target - current_now).total_seconds()
+            
+            # Print status every 10 seconds if > 1 min remaining, or every 1 sec if < 10s
+            should_print = False
+            if diff > 60:
+                if time.time() - last_print_time >= 30:
+                    should_print = True
+            elif diff > 10:
+                if time.time() - last_print_time >= 5:
+                    should_print = True
+            else:
+                should_print = True
+                
+            if should_print:
+                hours, rem = divmod(int(diff), 3600)
+                minutes, seconds = divmod(rem, 60)
+                time_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}" if hours > 0 else f"{minutes:02d}:{seconds:02d}"
+                print(f"{Fore.YELLOW}Waiting for schedule... {time_str} remaining")
+                last_print_time = time.time()
+            
+            # Sleep in small increments to stay responsive to SIGINT
+            time.sleep(0.5)
+            
+        print(f"{Fore.GREEN}Schedule reached! Starting booking process now...")
+    except Exception as e:
+        print(f"{Fore.RED}Error in schedule logic: {e}. Starting immediately.")
 
 # --- IPC Wrappers for Electron ---
 def custom_print(*args, **kwargs):
@@ -105,7 +158,7 @@ _cached_turnstile_time = 0
 
 WS_URL_TTL = 30        # Re-discover Chrome WS URL every 30s
 AUTH_TTL = 120          # Re-read auth from localStorage every 2 min
-TURNSTILE_TTL = 40      # Re-read turnstile token every 40s (they expire)
+TURNSTILE_TTL = 240     # Re-read turnstile token every 4 min (they expire after 300s officially)
 WATCHER_JS = '''
 if (!window.cftWatcherInjected) {
     window.cftWatcherInjected = true;
@@ -197,8 +250,8 @@ def get_turnstile_token(ws_url, force=False):
         const now = Date.now();
         const age = lastTime ? (now - parseInt(lastTime)) / 1000 : 999;
 
-        // If token is stale (>35s), force a reset now
-        if (token && age > 35 && window.turnstile) {
+        // If token is stale (>240s), force a reset now
+        if (token && age > 240 && window.turnstile) {
             try { 
                 turnstile.reset();
                 localStorage.removeItem('last_seen_cft');
@@ -273,90 +326,106 @@ def api_request(method, path, params=None, json_data=None):
         print(f"{Fore.RED}Cannot connect to Chrome. Is it running with --remote-debugging-port=9222?")
         return None
 
-    headers = get_auth_headers(ws_url)
-    if not headers or not headers.get('token'):
-        print(f"{Fore.RED}No auth token found in Chrome localStorage. Are you logged in?")
-        return None
+    # Max 2 attempts: if first fails with 422, refresh Turnstile and retry
+    for attempt in range(2):
+        headers = get_auth_headers(ws_url)
+        if not headers or not headers.get('token'):
+            print(f"{Fore.RED}No auth token found in Chrome localStorage. Are you logged in?")
+            return None
 
-    if params is None:
-        params = {}
-    cft = get_turnstile_token(ws_url)
-    
-    # Add Turnstile to params for GET, and both Body/Headers for others
-    if cft:
-        params['cft_response'] = cft
-
-    url = f"{API_BASE}{path}"
-    if params:
-        url += "?" + urllib.parse.urlencode(params)
-
-    # Escape single quotes in token values for JS string safety
-    token_escaped = headers['token'].replace("'", "\\'")
-    uudid_escaped = headers['uudid'].replace("'", "\\'")
-    ssdk_escaped = headers['ssdk'].replace("'", "\\'")
-    cft_escaped = cft.replace("'", "\\'") if cft else ""
-
-    # Check if this endpoint needs the X-Action-Token header
-    needs_action_token = any(ep in path for ep in ['reserve-seat', 'release-seat'])
-
-    js = f"""(async () => {{
-        const opts = {{
-            method: '{method}',
-            headers: {{
-                'Content-Type': 'application/json',
-                'Accept': 'application/json',
-                'Authorization': 'Bearer {token_escaped}',
-                'x-device-id': '{uudid_escaped}',
-                'x-device-key': '{ssdk_escaped}',
-                'x-requested-with': 'XMLHttpRequest'
-            }}
-        }};
-        if ('{cft_escaped}') {{
-            opts.headers['X-Turnstile-Token'] = '{cft_escaped}';
-        }}
-        """
-
-    # Add X-Action-Token header for reserve-seat / release-seat
-    if needs_action_token:
-        js += """
-        const actionToken = sessionStorage.getItem('atk') || '';
-        if (actionToken) {
-            opts.headers['X-Action-Token'] = actionToken;
-        }
-        """
-
-    if json_data:
-        # If it's a mutation, also include Turnstile in the body if available
+        current_params = params.copy() if params else {}
+        cft = get_turnstile_token(ws_url)
+        
+        # Add Turnstile to params for GET, and both Body/Headers for others
         if cft:
-            json_data['cft_response'] = cft
-        js += f"opts.body = JSON.stringify({json.dumps(json_data)});"
+            current_params['cft_response'] = cft
 
-    js += f"""
-        try {{
-            const controller = new AbortController();
-            const timeout = setTimeout(() => controller.abort(), 45000);
-            opts.signal = controller.signal;
-            const r = await fetch('{url}', opts);
-            clearTimeout(timeout);
-            const t = await r.text();
+        url = f"{API_BASE}{path}"
+        if current_params:
+            url += "?" + urllib.parse.urlencode(current_params)
 
-            // Capture X-Action-Token from response and store in sessionStorage
-            const actionTokenResp = r.headers.get('X-Action-Token');
-            if (actionTokenResp) {{
-                sessionStorage.setItem('atk', actionTokenResp);
+        # Escape single quotes in token values for JS string safety
+        token_escaped = headers['token'].replace("'", "\\'")
+        uudid_escaped = headers['uudid'].replace("'", "\\'")
+        ssdk_escaped = headers['ssdk'].replace("'", "\\'")
+        cft_escaped = cft.replace("'", "\\'") if cft else ""
+
+        # Check if this endpoint needs the X-Action-Token header
+        needs_action_token = any(ep in path for ep in ['reserve-seat', 'release-seat'])
+
+        js = f"""(async () => {{
+            const opts = {{
+                method: '{method}',
+                headers: {{
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json',
+                    'Authorization': 'Bearer {token_escaped}',
+                    'x-device-id': '{uudid_escaped}',
+                    'x-device-key': '{ssdk_escaped}',
+                    'x-requested-with': 'XMLHttpRequest'
+                }}
+            }};
+            if ('{cft_escaped}') {{
+                opts.headers['X-Turnstile-Token'] = '{cft_escaped}';
             }}
+            """
 
-            return JSON.stringify({{s: r.status, b: t}});
-        }} catch(e) {{
-            return JSON.stringify({{s: 0, b: e.message}});
-        }}
-    }})()"""
+        if needs_action_token:
+            js += """
+            const actionToken = sessionStorage.getItem('atk') || '';
+            if (actionToken) {
+                opts.headers['X-Action-Token'] = actionToken;
+            }
+            """
 
-    result = exec_js(ws_url, js, await_promise=True)
-    try:
-        return json.loads(result) if result else None
-    except:
-        return None
+        if json_data:
+            current_json = json_data.copy()
+            if cft:
+                current_json['cft_response'] = cft
+            js += f"opts.body = JSON.stringify({json.dumps(current_json)});"
+
+        js += f"""
+            try {{
+                const controller = new AbortController();
+                const timeout = setTimeout(() => controller.abort(), 45000);
+                opts.signal = controller.signal;
+                const r = await fetch('{url}', opts);
+                clearTimeout(timeout);
+                const t = await r.text();
+
+                const actionTokenResp = r.headers.get('X-Action-Token');
+                if (actionTokenResp) {{
+                    sessionStorage.setItem('atk', actionTokenResp);
+                }}
+
+                return JSON.stringify({{s: r.status, b: t}});
+            }} catch(e) {{
+                return JSON.stringify({{s: 0, b: e.message}});
+            }}
+        }})()"""
+
+        result_str = exec_js(ws_url, js, await_promise=True)
+        if not result_str:
+            return None
+            
+        try:
+            result = json.loads(result_str)
+            status = result.get('s')
+            
+            if status == 422:
+                print(f"{Fore.YELLOW}Warning: Received 422 (Unprocessable Entity). Turnstile token might be invalid.")
+                if attempt == 0:
+                    print(f"{Fore.CYAN}Invalidating Turnstile token and retrying request... (Attempt {attempt+1}/2)")
+                    invalidate_turnstile()
+                    time.sleep(2) # Give it a moment to reset
+                    continue
+            
+            return result
+        except Exception as e:
+            print(f"{Fore.RED}Error parsing API result: {e}")
+            return None
+
+    return None
 
 
 def auto_login_if_needed(ws_url):
@@ -1050,6 +1119,13 @@ def fresh_login():
     cf-turnstile-response input to contain a valid token."""
     print(f"{Fore.CYAN}Starting fresh login...")
 
+    # Step 0: Clear existing session data
+    ws_url = get_ws_url()
+    if ws_url:
+        print(f"{Fore.YELLOW}Step 0/6: Clearing existing browser session data...")
+        exec_js(ws_url, "localStorage.clear(); sessionStorage.clear();")
+        time.sleep(2)
+
     # Step 1: Wait for homepage to fully load (Angular bootstrap + Cloudflare JS)
     print(f"{Fore.YELLOW}Step 1/6: Waiting for homepage to load...")
     time.sleep(12)  # Give the Angular app + Cloudflare scripts time to bootstrap
@@ -1186,6 +1262,11 @@ def fresh_login():
 def main():
     global trip_id, trip_route_id, boarding_point_id, train_name
     try:
+        # Check for schedule first
+        schedule_time = config.get('SCHEDULE_TIME')
+        if schedule_time:
+            wait_for_schedule(schedule_time)
+
         # --- Step 0: Launch Chrome and verify or perform login ---
         if not launch_chrome():
             print(f"{Fore.RED}Failed to launch Chrome. Exiting.")
@@ -1193,12 +1274,24 @@ def main():
 
         # Start the actual booking flow
         print(f"{Fore.CYAN}--- Verifying Login Session ---")
-        auth_key = fetch_auth_key()
+        login_start_time = time.time()
+        
+        force_refresh = config.get('REFRESH_LOGIN', False)
+        if force_refresh:
+            global _cached_auth, _cached_auth_time
+            _cached_auth = None
+            _cached_auth_time = 0
+            
+        auth_key = None if force_refresh else fetch_auth_key()
         
         if auth_key:
             print(f"{Fore.GREEN}Existing active session detected. Skipping fresh login.")
         else:
-            print(f"{Fore.YELLOW}No active session found. Starting Fresh Login Flow...")
+            if force_refresh:
+                print(f"{Fore.YELLOW}Refresh requested. Starting Fresh Login Flow...")
+            else:
+                print(f"{Fore.YELLOW}No active session found. Starting Fresh Login Flow...")
+                
             if not fresh_login():
                 print(f"{Fore.RED}Login failed. Cannot proceed.")
                 return
@@ -1213,8 +1306,10 @@ def main():
         user_email, user_phone, user_name = extract_user_info_from_token(auth_key)
 
         if LOGIN_ONLY:
+            elapsed = time.time() - login_start_time
             builtins.print(json.dumps({"type": "auth_success", "user": {"name": user_name, "email": user_email}}), flush=True)
-            print(f"{Fore.GREEN}Pre-login successful! Session is now active. You can start booking now.")
+            print(f"{Fore.GREEN}Pre-login successful! (Time taken: {elapsed:.2f}s)")
+            print(f"{Fore.GREEN}Session is now active. You can start booking now.")
             exit()
 
         user_email, user_phone, user_name = extract_user_info_from_token(auth_key)
