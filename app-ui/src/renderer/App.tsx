@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Play, Square, ExternalLink, Terminal, TrainFront, User, RefreshCcw, CheckCircle2 } from 'lucide-react';
+import { Play, Square, ExternalLink, Terminal, TrainFront, User, RefreshCcw, CheckCircle2, Clock, CalendarClock } from 'lucide-react';
 import { TitleBar } from './components/TitleBar';
 import { Onboarding } from './components/Onboarding';
 import { STATIONS } from './stations';
@@ -26,8 +26,16 @@ export default function App() {
     const [paymentUrl, setPaymentUrl] = useState('');
     const [showOnboarding, setShowOnboarding] = useState(true);
     const [userInfo, setUserInfo] = useState<{ name: string; email: string } | null>(null);
+    const [showScheduleModal, setShowScheduleModal] = useState(false);
+
+    const [currentTime, setCurrentTime] = useState(new Date());
 
     const logsEndRef = useRef<HTMLDivElement>(null);
+
+    useEffect(() => {
+        const timer = setInterval(() => setCurrentTime(new Date()), 1000);
+        return () => clearInterval(timer);
+    }, []);
 
     useEffect(() => {
         // Check localStorage for credentials
@@ -193,6 +201,30 @@ export default function App() {
                                     </div>
                                 </div>
                         <div className="space-y-6">
+                            <div className="bg-gray-900/50 border border-gray-800 rounded-lg px-4 py-3 shadow-xl backdrop-blur-sm flex items-center justify-between">
+                                <div className="flex items-center gap-3">
+                                    <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest whitespace-nowrap">System Time</span>
+                                    <div className="w-[1px] h-4 bg-gray-800" />
+                                    <button 
+                                        onClick={() => setShowScheduleModal(true)}
+                                        className={`p-1.5 rounded transition-all ${config.SCHEDULE_TIME ? 'bg-green-500 text-black shadow-lg shadow-green-500/20' : 'hover:bg-gray-800 text-gray-400'}`}
+                                        title={config.SCHEDULE_TIME ? `Scheduled for ${config.SCHEDULE_TIME}` : 'Schedule Booking'}
+                                    >
+                                        <CalendarClock size={16} />
+                                    </button>
+                                </div>
+                                <div className="flex items-center gap-3">
+                                    {config.SCHEDULE_TIME && (
+                                        <div className="text-[10px] font-mono font-bold text-green-500 animate-pulse bg-green-500/10 px-2 py-0.5 rounded border border-green-500/20">
+                                            {config.SCHEDULE_TIME}
+                                        </div>
+                                    )}
+                                    <div className="text-xl font-mono font-bold text-white tracking-tighter">
+                                        {currentTime.toLocaleTimeString([], { hour12: true, hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                                    </div>
+                                </div>
+                            </div>
+
                             <div className="bg-gray-900/50 border border-gray-800 rounded-lg p-6 space-y-4 shadow-xl backdrop-blur-sm">
                                 <div className="flex items-center justify-between mb-2">
                                     <h2 className="text-lg font-bold text-green-500">Authentication</h2>
@@ -354,17 +386,6 @@ export default function App() {
                                     />
                                 </div>
 
-                                 <div className="mb-4">
-                                    <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1">Schedule Time (Optional)</label>
-                                    <input
-                                        type="time"
-                                        step="1"
-                                        className="w-full bg-gray-950 border border-gray-700 rounded p-2.5 text-sm focus:border-green-500 focus:ring-1 focus:ring-green-500 outline-none transition-colors"
-                                        value={config.SCHEDULE_TIME}
-                                        onChange={(e) => setConfig({ ...config, SCHEDULE_TIME: e.target.value })}
-                                    />
-                                    <p className="text-[10px] text-gray-500 mt-1 italic">Process will wait until this time to start booking.</p>
-                                </div>
 
                                 <div className="flex gap-3 pt-2">
                                     <button
@@ -462,6 +483,56 @@ export default function App() {
                         </div>
                     </>
                 )}
+            {showScheduleModal && (
+                <div className="fixed inset-0 z-[100] flex items-center justify-center p-6">
+                    <div 
+                        className="absolute inset-0 bg-black/80 backdrop-blur-sm animate-in fade-in duration-300"
+                        onClick={() => setShowScheduleModal(false)}
+                    />
+                    <div className="relative w-full max-w-sm bg-gray-900 border border-gray-800 rounded-2xl p-6 shadow-2xl shadow-black/50 animate-in zoom-in-95 fade-in duration-200">
+                        <div className="flex items-center gap-3 mb-6">
+                            <div className="w-10 h-10 bg-green-500/10 rounded-xl flex items-center justify-center">
+                                <CalendarClock size={22} className="text-green-500" />
+                            </div>
+                            <div>
+                                <h3 className="text-lg font-bold text-white">Schedule Booking</h3>
+                                <p className="text-xs text-gray-400">Set a specific time to trigger the automation.</p>
+                            </div>
+                        </div>
+
+                        <div className="space-y-6">
+                            <div>
+                                <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-2 text-center">Target Time (24-Hour)</label>
+                                <input
+                                    type="time"
+                                    step="1"
+                                    className="w-full bg-gray-950 border border-gray-700 rounded-xl p-4 text-3xl font-mono font-bold text-green-500 text-center focus:border-green-500 focus:ring-1 focus:ring-green-500 outline-none transition-all [color-scheme:dark]"
+                                    value={config.SCHEDULE_TIME}
+                                    onChange={(e) => setConfig({ ...config, SCHEDULE_TIME: e.target.value })}
+                                />
+                            </div>
+
+                            <div className="flex gap-3">
+                                <button
+                                    onClick={() => {
+                                        setConfig({ ...config, SCHEDULE_TIME: '' });
+                                        setShowScheduleModal(false);
+                                    }}
+                                    className="flex-1 py-3 rounded-xl text-xs font-bold text-red-400 bg-red-500/5 border border-red-500/10 hover:bg-red-500/10 transition-colors"
+                                >
+                                    Clear Schedule
+                                </button>
+                                <button
+                                    onClick={() => setShowScheduleModal(false)}
+                                    className="flex-1 py-3 rounded-xl text-xs font-bold bg-green-500 text-black hover:bg-green-400 transition-all shadow-lg shadow-green-500/20 active:scale-95"
+                                >
+                                    Save & Close
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
             </div>
         </div>
     );

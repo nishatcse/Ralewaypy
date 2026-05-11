@@ -413,6 +413,12 @@ def api_request(method, path, params=None, json_data=None):
             status = result.get('s')
             
             if status == 422:
+                body_lower = result.get('b', '').lower()
+                # If the error is about seat availability, don't invalidate Turnstile
+                if any(kw in body_lower for kw in ['seat', 'available', 'not found', 'taken', 'reserved']):
+                    print(f"{Fore.YELLOW}No seat available (422). Waiting for seats to become available...")
+                    return result
+                    
                 print(f"{Fore.YELLOW}Warning: Received 422 (Unprocessable Entity). Turnstile token might be invalid.")
                 if attempt == 0:
                     print(f"{Fore.CYAN}Invalidating Turnstile token and retrying request... (Attempt {attempt+1}/2)")
@@ -887,7 +893,6 @@ def reserve_seat():
             return successful, ticket_id_map
         else:
             print(f"{Fore.RED}No seats could be reserved. Re-fetching seat layout in 2s...")
-            invalidate_turnstile()  # Refresh in case turnstile expired during attempts
             time.sleep(2)
 
 
