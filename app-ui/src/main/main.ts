@@ -1,5 +1,5 @@
 import * as path from 'path';
-import { app, BrowserWindow, nativeTheme, ipcMain, Menu } from 'electron';
+import { app, BrowserWindow, nativeTheme, ipcMain, Menu, safeStorage } from 'electron';
 import { spawn, ChildProcess } from 'child_process';
 import * as fs from 'fs';
 
@@ -116,16 +116,26 @@ function setupIpc() {
             pythonProcess.kill();
         }
 
-        const binPath = getPythonBinaryPath();
-        
-        // Ensure binary is executable (Linux/Mac)
-        if (process.platform !== 'win32' && fs.existsSync(binPath)) {
-            try { fs.chmodSync(binPath, '755'); } catch (e) {}
+        const isPackaged = app.isPackaged;
+        let binPath = '';
+        let spawnCmd = '';
+        let spawnArgs: string[] = [];
+
+        if (!isPackaged) {
+            // In dev: Use python3 to run the script directly for fast iteration
+            binPath = path.join(__dirname, '../../backend/app.py');
+            spawnCmd = 'python3';
+            spawnArgs = [binPath];
+        } else {
+            // In production: Use the bundled binary
+            binPath = getPythonBinaryPath();
+            spawnCmd = binPath;
+            spawnArgs = [];
         }
 
         try {
-            console.log(`Starting python sidecar at: ${binPath}`);
-            pythonProcess = spawn(binPath, [], {
+            console.log(`Starting python process: ${spawnCmd} ${spawnArgs.join(' ')}`);
+            pythonProcess = spawn(spawnCmd, spawnArgs, {
                 stdio: ['pipe', 'pipe', 'pipe']
             });
 
@@ -163,10 +173,37 @@ function setupIpc() {
         }
     });
 
+    ipcMain.handle('stop-booking', () => {
+        if (pythonProcess) {
+            pythonProcess.kill();
+            pythonProcess = null;
+            return { success: true };
+        }
+        return { success: false, error: 'No process running' };
+    });
+
     ipcMain.on('backend-input', (_event, input) => {
         if (pythonProcess && pythonProcess.stdin) {
             pythonProcess.stdin.write(input + '\n');
         }
+    });
+
+    ipcMain.handle('safe-encrypt', (_event, str: string) => {
+        if (safeStorage.isEncryptionAvailable()) {
+            return safeStorage.encryptString(str).toString('base64');
+        }
+        return str; // Fallback
+    });
+
+    ipcMain.handle('safe-decrypt', (_event, str: string) => {
+        if (safeStorage.isEncryptionAvailable() && str) {
+            try {
+                return safeStorage.decryptString(Buffer.from(str, 'base64'));
+            } catch (e) {
+                return str;
+            }
+        }
+        return str;
     });
 }
 

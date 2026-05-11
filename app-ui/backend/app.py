@@ -1,9 +1,10 @@
-import requests, time, jwt, os, asyncio, re, json
+import requests, time, jwt, os, asyncio, re, json, select
 import urllib.request, urllib.parse
 import subprocess, shutil, signal, tempfile, platform
 import websocket
 import sys
 import builtins
+from datetime import datetime
 
 # --- IPC Wrappers for Electron ---
 def custom_print(*args, **kwargs):
@@ -20,12 +21,47 @@ print = custom_print
 input = custom_input
 
 class DummyFore:
+    RED = ""
+    GREEN = ""
+    YELLOW = ""
+    CYAN = ""
     def __getattr__(self, name):
         return ""
 Fore = DummyFore()
 # ---------------------------------
 
 print("Waiting for configuration JSON on stdin...")
+
+# Global state for cleanup
+_reserved_tickets_for_cleanup = []
+
+def cleanup_on_exit(sig=None, frame=None):
+    """Gracefully release seats and invalidate turnstile on exit/stop."""
+    global _reserved_tickets_for_cleanup
+    if _reserved_tickets_for_cleanup:
+        print(f"{Fore.YELLOW}Stop requested. Releasing {len(_reserved_tickets_for_cleanup)} reserved seats...")
+        for ticket_id in _reserved_tickets_for_cleanup:
+            try:
+                # We use a simplified api_request logic here or call it directly
+                # to avoid issues if the main loop is stuck
+                api_request("PATCH", "/v1.0/web/bookings/release-seat", json_data={"ticket_id": ticket_id, "route_id": trip_route_id})
+            except:
+                pass
+        print(f"{Fore.GREEN}Seats released successfully.")
+    
+    try:
+        invalidate_turnstile()
+    except:
+        pass
+        
+    if sig is not None:
+        print(f"{Fore.RED}Process stopped by user signal.")
+        sys.exit(0)
+
+# Register signal handlers for graceful stop
+signal.signal(signal.SIGINT, cleanup_on_exit)
+signal.signal(signal.SIGTERM, cleanup_on_exit)
+
 try:
     config_str = sys.stdin.readline()
     config = json.loads(config_str)
@@ -36,6 +72,12 @@ except Exception as e:
 from_city = config.get("FROM_CITY")
 to_city = config.get("TO_CITY")
 date_of_journey = config.get("DATE_OF_JOURNEY")
+try:
+    # Try to parse YYYY-MM-DD from the new frontend picker
+    date_obj = datetime.strptime(date_of_journey, '%Y-%m-%d')
+    date_of_journey = date_obj.strftime('%d-%b-%Y')
+except (ValueError, TypeError):
+    pass
 seat_class = config.get("SEAT_CLASS")
 train_number = int(config.get("TRAIN_NUMBER", 0))
 max_selectable_seat = int(config.get("MAX_SELECTABLE_SEAT", 1))
@@ -43,6 +85,12 @@ desired_seats_raw = config.get("DESIRED_SEATS", "")
 desired_seats = desired_seats_raw.split(',') if desired_seats_raw else []
 mobile_number = config.get("MOBILE_NUMBER")
 password = config.get("PASSWORD")
+LOGIN_ONLY = config.get("LOGIN_ONLY", False)
+
+if not LOGIN_ONLY:
+    print(f"{Fore.CYAN}Starting ticket booking process...")
+else:
+    print(f"{Fore.CYAN}Starting Pre-Login Session...")
 
 API_BASE = "https://railspaapi.shohoz.com"
 trip_id = trip_route_id = boarding_point_id = train_name = None
@@ -57,7 +105,19 @@ _cached_turnstile_time = 0
 
 WS_URL_TTL = 30        # Re-discover Chrome WS URL every 30s
 AUTH_TTL = 120          # Re-read auth from localStorage every 2 min
-TURNSTILE_TTL = 45      # Re-read turnstile token every 45s (they expire)
+TURNSTILE_TTL = 40      # Re-read turnstile token every 40s (they expire)
+WATCHER_JS = '''
+if (!window.cftWatcherInjected) {
+    window.cftWatcherInjected = true;
+    setInterval(() => {
+        const inp = document.querySelector('input[name="cf-turnstile-response"]');
+        if (inp && inp.value && inp.value !== localStorage.getItem('last_seen_cft')) {
+            localStorage.setItem('last_seen_cft', inp.value);
+            localStorage.setItem('last_cft_time', Date.now().toString());
+        }
+    }, 1000);
+}
+'''
 
 
 def get_ws_url(force=False):
@@ -126,30 +186,45 @@ def get_turnstile_token(ws_url, force=False):
         _cached_turnstile_time = 0
         return token
 
-    # Try to get current token from the page
+    # Inject watcher if not present
+    exec_js(ws_url, WATCHER_JS)
+
+    # Try to get current token and its age from the page
     js = '''(() => {
         const inp = document.querySelector('input[name="cf-turnstile-response"]');
         const token = inp ? inp.value : null;
+        const lastTime = localStorage.getItem('last_cft_time');
+        const now = Date.now();
+        const age = lastTime ? (now - parseInt(lastTime)) / 1000 : 999;
 
-        // After reading, trigger Turnstile to generate a new token for next use
-        if (window.turnstile) {
-            try {
-                // Reset all Turnstile widgets to regenerate tokens
-                const widgets = document.querySelectorAll('[id^="cf-turnstile"]');
-                widgets.forEach(w => {
-                    try { turnstile.reset(w.id); } catch(e) {}
-                });
-                // Also try reset without ID (resets first widget)
-                try { turnstile.reset(); } catch(e) {}
+        // If token is stale (>35s), force a reset now
+        if (token && age > 35 && window.turnstile) {
+            try { 
+                turnstile.reset();
+                localStorage.removeItem('last_seen_cft');
+                localStorage.removeItem('last_cft_time');
+                return "RESET_TRIGGERED";
             } catch(e) {}
         }
 
-        return token;
+        return JSON.stringify({token: token, age: age});
     })()'''
 
-    token = exec_js(ws_url, js)
-    if token:
-        return token
+    result_str = exec_js(ws_url, js)
+    if result_str == "RESET_TRIGGERED":
+        print(f"{Fore.YELLOW}Turnstile token was stale. Triggered reset, waiting for new one...")
+        time.sleep(3)
+        return get_turnstile_token(ws_url, force=True)
+
+    try:
+        result = json.loads(result_str)
+        token = result.get('token')
+        age = result.get('age', 999)
+        
+        if token and age < TURNSTILE_TTL:
+            return token
+    except:
+        pass
 
     # Token not available — maybe Turnstile hasn't loaded or is regenerating
     # Wait briefly and try once more
@@ -206,15 +281,20 @@ def api_request(method, path, params=None, json_data=None):
     if params is None:
         params = {}
     cft = get_turnstile_token(ws_url)
+    
+    # Add Turnstile to params for GET, and both Body/Headers for others
     if cft:
         params['cft_response'] = cft
 
-    url = f"{API_BASE}{path}?" + urllib.parse.urlencode(params)
+    url = f"{API_BASE}{path}"
+    if params:
+        url += "?" + urllib.parse.urlencode(params)
 
     # Escape single quotes in token values for JS string safety
     token_escaped = headers['token'].replace("'", "\\'")
     uudid_escaped = headers['uudid'].replace("'", "\\'")
     ssdk_escaped = headers['ssdk'].replace("'", "\\'")
+    cft_escaped = cft.replace("'", "\\'") if cft else ""
 
     # Check if this endpoint needs the X-Action-Token header
     needs_action_token = any(ep in path for ep in ['reserve-seat', 'release-seat'])
@@ -231,6 +311,9 @@ def api_request(method, path, params=None, json_data=None):
                 'x-requested-with': 'XMLHttpRequest'
             }}
         }};
+        if ('{cft_escaped}') {{
+            opts.headers['X-Turnstile-Token'] = '{cft_escaped}';
+        }}
         """
 
     # Add X-Action-Token header for reserve-seat / release-seat
@@ -243,6 +326,9 @@ def api_request(method, path, params=None, json_data=None):
         """
 
     if json_data:
+        # If it's a mutation, also include Turnstile in the body if available
+        if cft:
+            json_data['cft_response'] = cft
         js += f"opts.body = JSON.stringify({json.dumps(json_data)});"
 
     js += f"""
@@ -481,8 +567,12 @@ def fetch_trip_details():
     global trip_id, trip_route_id, boarding_point_id, train_name
     print(f"{Fore.YELLOW}Fetching trip details for {from_city} to {to_city} on {date_of_journey}...")
 
+    # Format date for the search-trips API
+    formatted_date = date_of_journey
+
+    retry_delay = 1
     while True:
-        r = api_request("GET", "/v1.0/web/bookings/search-trips-v2", {"from_city": from_city, "to_city": to_city, "date_of_journey": date_of_journey, "seat_class": seat_class})
+        r = api_request("GET", "/v1.0/web/bookings/search-trips-v2", {"from_city": from_city, "to_city": to_city, "date_of_journey": formatted_date, "seat_class": seat_class})
 
         if r and r.get('s') == 200:
             try:
@@ -505,9 +595,11 @@ def fetch_trip_details():
                             return trip_id, trip_route_id, boarding_point_id, train_name
             print(f"{Fore.YELLOW}Train {train_number} / {seat_class} not available yet. Retrying in 1 second...")
             time.sleep(1)
+            retry_delay = 1  # Reset backoff on 200 OK
         elif r and r.get('s') in [500, 502, 503, 504]:
-            print(f"{Fore.YELLOW}Server overloaded ({r['s']}). Retrying in 1 second...")
-            time.sleep(1)
+            print(f"{Fore.YELLOW}Server overloaded ({r['s']}). Retrying in {retry_delay} second(s)...")
+            time.sleep(retry_delay)
+            retry_delay = min(retry_delay * 2, 10)
         else:
             status = r.get('s') if r else 'No response'
             body = r.get('b', '')[:200] if r else ''
@@ -631,69 +723,44 @@ def is_booking_available():
 
 
 def get_ticket_ids_from_layout(seat_layout, desired_seats, max_selectable_seat):
-    selected_seat_details = {}
-    if desired_seats:
-        for coach in seat_layout:
-            for row in coach["layout"]:
-                for seat in row:
-                    if seat["seat_availability"] == 1 and seat["seat_number"] in desired_seats:
-                        selected_seat_details[seat["ticket_id"]] = seat["seat_number"]
-                        if len(selected_seat_details) == max_selectable_seat:
-                            return selected_seat_details
-        for coach in seat_layout:
-            for row in coach["layout"]:
-                seat_numbers = [seat for seat in row if seat["seat_availability"] == 1]
-                for desired_seat in desired_seats:
-                    nearby_seats = [s for s in seat_numbers if s["seat_number"] == desired_seat]
-                    if nearby_seats:
-                        desired_index = seat_numbers.index(nearby_seats[0])
-                        for offset in range(1, len(seat_numbers)):
-                            if desired_index + offset < len(seat_numbers):
-                                seat = seat_numbers[desired_index + offset]
-                                if seat['seat_availability'] == 1 and seat['seat_number'] not in selected_seat_details.values():
-                                    selected_seat_details[seat['ticket_id']] = seat['seat_number']
-                                    if len(selected_seat_details) == max_selectable_seat: return selected_seat_details
-                            if desired_index - offset >= 0:
-                                seat = seat_numbers[desired_index - offset]
-                                if seat['seat_availability'] == 1 and seat['seat_number'] not in selected_seat_details.values():
-                                    selected_seat_details[seat['ticket_id']] = seat['seat_number']
-                                    if len(selected_seat_details) == max_selectable_seat: return selected_seat_details
-        for coach in seat_layout:
-            for row in coach["layout"]:
-                for seat in row:
-                    if seat["seat_availability"] == 1 and seat["seat_number"] not in selected_seat_details.values():
-                        selected_seat_details[seat["ticket_id"]] = seat["seat_number"]
-                        if len(selected_seat_details) == max_selectable_seat: return selected_seat_details
+    if not seat_layout:
+        print(f"{Fore.RED}No seat layout available.")
+        return None
 
-    all_available_seats = []
+    # Map of available seat_number to ticket_id
+    available_seats = {}
     for coach in seat_layout:
-        coach_data = {"coach": coach.get("coach_name", "Unknown"), "seats": []}
-        for row in coach["layout"]:
+        for row in coach.get('layout', []):
             for seat in row:
-                if seat["seat_availability"] == 1:
-                    coach_data["seats"].append(seat)
-        if coach_data["seats"]:
-            all_available_seats.append(coach_data)
+                if seat.get('seat_availability') == 1:
+                    available_seats[seat.get('seat_number')] = seat.get('ticket_id')
 
-    if all_available_seats:
-        seats = all_available_seats[0]["seats"]
-        if 0 < len(seats):
-            selected_seat_details[seats[0]["ticket_id"]] = seats[0]["seat_number"]
-            if len(selected_seat_details) == max_selectable_seat: return selected_seat_details
+    if not available_seats:
+        print(f"{Fore.RED}No available seats found!")
+        return None
+
+    selected_seat_details = {}
+
+    # Try to reserve specifically requested seats first
+    if desired_seats:
+        for desired_seat in desired_seats:
+            if desired_seat in available_seats and len(selected_seat_details) < max_selectable_seat:
+                selected_seat_details[available_seats[desired_seat]] = desired_seat
+
+    # Add additional available seats if needed
+    if len(selected_seat_details) < max_selectable_seat:
+        for seat_number, ticket_id in available_seats.items():
+            if ticket_id not in selected_seat_details and len(selected_seat_details) < max_selectable_seat:
+                selected_seat_details[ticket_id] = seat_number
+
+    if not selected_seat_details:
+        print(f"{Fore.RED}No seats available to proceed.")
+        return None
 
     if len(selected_seat_details) < max_selectable_seat:
-        for coach_data in all_available_seats:
-            for seat in coach_data["seats"]:
-                if len(selected_seat_details) >= max_selectable_seat: break
-                if seat["ticket_id"] not in selected_seat_details:
-                    selected_seat_details[seat["ticket_id"]] = seat["seat_number"]
-
-    if selected_seat_details:
-        if len(selected_seat_details) < max_selectable_seat:
-            print(f"{Fore.YELLOW}Warning: Proceeding with {len(selected_seat_details)} seats instead of {max_selectable_seat}")
-        return selected_seat_details
-    print(f"{Fore.RED}No seats available to proceed.")
-    return None
+        print(f"{Fore.YELLOW}Warning: Proceeding with {len(selected_seat_details)} seats instead of {max_selectable_seat}")
+    
+    return selected_seat_details
 
 
 def reserve_seat():
@@ -778,14 +845,31 @@ def ensure_on_search_page():
             ws_url = get_ws_url(force=True)
             if not ws_url:
                 continue
-            token = exec_js(ws_url, '''(() => {
+            # Inject watcher
+            exec_js(ws_url, WATCHER_JS)
+            
+            res_str = exec_js(ws_url, '''(() => {
                 const inp = document.querySelector('input[name="cf-turnstile-response"]');
-                return inp ? inp.value : null;
+                const lastTime = localStorage.getItem('last_cft_time');
+                const age = lastTime ? (Date.now() - parseInt(lastTime)) / 1000 : 999;
+                return JSON.stringify({token: inp ? inp.value : null, age: age});
             })()''')
-            if token:
-                print(f"{Fore.GREEN}Turnstile token ready!")
-                invalidate_turnstile()  # Force cache refresh with the new token
-                return
+            
+            try:
+                res = json.loads(res_str)
+                token = res.get('token')
+                age = res.get('age', 999)
+                
+                if token and age < 30: # Use a very fresh token for the first search
+                    print(f"{Fore.GREEN}Fresh Turnstile token ready (age: {age:.1f}s)!")
+                    invalidate_turnstile()
+                    return
+                elif token and age >= 30:
+                    print(f"{Fore.YELLOW}Token is too old ({age:.1f}s). Forcing reset...")
+                    exec_js(ws_url, "if(window.turnstile) turnstile.reset(); localStorage.removeItem('last_cft_time');")
+                    time.sleep(2)
+            except:
+                pass
         except:
             pass
 
@@ -897,8 +981,14 @@ def launch_chrome():
             return False
 
     if port_is_open():
-        print(f"{Fore.YELLOW}Chrome debug port {CHROME_DEBUG_PORT} already open. Killing existing session...")
-        _kill_chrome_on_port(CHROME_DEBUG_PORT)
+        # Check if we already have a valid session before killing
+        token = fetch_auth_key()
+        if token:
+            print(f"{Fore.GREEN}Active Chrome session with valid token detected. Reusing existing session.")
+            return True
+        else:
+            print(f"{Fore.YELLOW}Chrome debug port {CHROME_DEBUG_PORT} already open but no session found. Killing existing session...")
+            _kill_chrome_on_port(CHROME_DEBUG_PORT)
 
     # Clean user data for fresh session
     if os.path.exists(CHROME_USER_DATA):
@@ -930,6 +1020,10 @@ def launch_chrome():
     kwargs = {'stdout': subprocess.DEVNULL, 'stderr': subprocess.DEVNULL}
     if platform.system() == 'Windows':
         kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
+    else:
+        # On Linux/macOS, use start_new_session to decouple Chrome from Python
+        kwargs['start_new_session'] = True
+        
     subprocess.Popen(chrome_cmd, **kwargs)
 
     # Wait for Chrome to be ready
@@ -1092,23 +1186,36 @@ def fresh_login():
 def main():
     global trip_id, trip_route_id, boarding_point_id, train_name
     try:
-        print(f"{Fore.CYAN}Starting ticket booking process...")
-
-        # --- Step 0: Launch Chrome and perform fresh login ---
+        # --- Step 0: Launch Chrome and verify or perform login ---
         if not launch_chrome():
             print(f"{Fore.RED}Failed to launch Chrome. Exiting.")
             exit()
 
-        if not fresh_login():
-            print(f"{Fore.RED}Failed to log in automatically. Exiting.")
-            exit()
-
+        # Start the actual booking flow
+        print(f"{Fore.CYAN}--- Verifying Login Session ---")
         auth_key = fetch_auth_key()
+        
+        if auth_key:
+            print(f"{Fore.GREEN}Existing active session detected. Skipping fresh login.")
+        else:
+            print(f"{Fore.YELLOW}No active session found. Starting Fresh Login Flow...")
+            if not fresh_login():
+                print(f"{Fore.RED}Login failed. Cannot proceed.")
+                return
+            auth_key = fetch_auth_key()
+
         if not auth_key:
-            print(f"{Fore.RED}Failed to fetch auth token after login. Exiting.")
+            print(f"{Fore.RED}Failed to fetch auth token. Exiting.")
             exit()
 
         print(f"{Fore.GREEN}Auth token obtained successfully!")
+        
+        user_email, user_phone, user_name = extract_user_info_from_token(auth_key)
+
+        if LOGIN_ONLY:
+            builtins.print(json.dumps({"type": "auth_success", "user": {"name": user_name, "email": user_email}}), flush=True)
+            print(f"{Fore.GREEN}Pre-login successful! Session is now active. You can start booking now.")
+            exit()
 
         user_email, user_phone, user_name = extract_user_info_from_token(auth_key)
 
@@ -1118,6 +1225,7 @@ def main():
         fetch_trip_details()
 
         reserved_ticket_ids, ticket_id_map = reserve_seat()
+        _reserved_tickets_for_cleanup = reserved_ticket_ids  # Track for cleanup if stopped
 
         otp_payload = {"trip_id": trip_id, "trip_route_id": trip_route_id, "ticket_ids": reserved_ticket_ids}
 
@@ -1136,13 +1244,67 @@ def main():
             print(f"{Fore.RED}Failed to send passenger details. Status: {r['s'] if r else 'No response'}")
             return
 
-        otp = input(f"{Fore.YELLOW}Enter the OTP received: ")
+        # --- OTP Verification Loop ---
+        max_otp_attempts = 3
+        otp = ""
+        otp_timeout = 120 # 2 minutes
+        
+        for attempt in range(max_otp_attempts):
+            prompt_text = f"Enter the OTP received (Attempt {attempt+1}/{max_otp_attempts})"
+            # Signal the UI to accept input
+            builtins.print(json.dumps({"type": "prompt", "message": prompt_text}), flush=True)
+            
+            print(f"{Fore.YELLOW}Timer: 120s remaining. Please enter OTP now...")
+            
+            # Timed input using select
+            start_time = time.time()
+            otp = None
+            while True:
+                elapsed = time.time() - start_time
+                remaining = int(otp_timeout - elapsed)
+                
+                if remaining <= 0:
+                    print(f"{Fore.RED}Time exceeded (2 minutes reached)! OTP is likely invalid now.")
+                    return
+                
+                # Check for input every 0.5s to keep responsiveness
+                rlist, _, _ = select.select([sys.stdin], [], [], 0.5)
+                if rlist:
+                    otp = sys.stdin.readline().strip()
+                    break
+                
+                # Print countdown update every 15s to keep user informed
+                if remaining % 15 == 0 and remaining < otp_timeout:
+                    print(f"{Fore.CYAN}Timer: {remaining}s remaining... Waiting for OTP.")
 
-        verify_payload = {**otp_payload, "otp": otp}
-        r = api_request("POST", "/v1.0/web/bookings/verify-otp", json_data=verify_payload)
-        if not r or r['s'] != 200:
-            print(f"{Fore.RED}Failed to verify OTP.")
-            return
+            if not otp: continue
+
+            verify_payload = {**otp_payload, "otp": otp}
+            r = api_request("POST", "/v1.0/web/bookings/verify-otp", json_data=verify_payload)
+            
+            if r and r['s'] == 200:
+                print(f"{Fore.GREEN}OTP verified successfully!")
+                break
+            else:
+                status = r['s'] if r else 'No response'
+                error_msg = "Unknown error"
+                try:
+                    error_data = json.loads(r['b'])
+                    error_messages = error_data.get("error", {}).get("messages", {})
+                    if isinstance(error_messages, dict):
+                        error_msg = error_messages.get("message", r['b'][:200])
+                    else:
+                        error_msg = str(error_messages)
+                except:
+                    error_msg = r['b'][:200] if r else "Connection timed out"
+
+                print(f"{Fore.RED}Failed to verify OTP: {error_msg}")
+                if attempt < max_otp_attempts - 1:
+                    print(f"{Fore.YELLOW}Giving you another chance to enter the correct OTP...")
+                else:
+                    print(f"{Fore.RED}Maximum OTP attempts reached. Process terminated.")
+                    return
+        # -----------------------------
 
         print(f"{Fore.GREEN}OTP verified successfully!")
 
@@ -1180,6 +1342,7 @@ def main():
 
         r = api_request("PATCH", "/v1.0/web/bookings/confirm", json_data=confirm_payload)
         if r and r['s'] == 200:
+            _reserved_tickets_for_cleanup = [] # Clear cleanup list as they are now confirmed
             try:
                 data = json.loads(r['b'])
                 if "redirectUrl" in data.get("data", {}):

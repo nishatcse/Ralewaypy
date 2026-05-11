@@ -1,15 +1,16 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Play, Square, ExternalLink, Terminal, TrainFront } from 'lucide-react';
+import { Play, Square, ExternalLink, Terminal, TrainFront, User, RefreshCcw, CheckCircle2 } from 'lucide-react';
 import { TitleBar } from './components/TitleBar';
 import { Onboarding } from './components/Onboarding';
+import { STATIONS } from './stations';
 
 export default function App() {
     const [config, setConfig] = useState({
         MOBILE_NUMBER: '',
         PASSWORD: '',
-        FROM_CITY: '',
-        TO_CITY: '',
-        DATE_OF_JOURNEY: '',
+        FROM_CITY: 'Dhaka',
+        TO_CITY: 'Nilphamari',
+        DATE_OF_JOURNEY: new Date().toISOString().split('T')[0],
         SEAT_CLASS: 'S_CHAIR',
         TRAIN_NUMBER: '771',
         MAX_SELECTABLE_SEAT: '1',
@@ -18,10 +19,12 @@ export default function App() {
 
     const [logs, setLogs] = useState<{ type: string; message: string; level?: string }[]>([]);
     const [isRunning, setIsRunning] = useState(false);
+    const [activeTask, setActiveTask] = useState<'login' | 'booking' | null>(null);
     const [promptMsg, setPromptMsg] = useState('');
     const [promptInput, setPromptInput] = useState('');
     const [paymentUrl, setPaymentUrl] = useState('');
     const [showOnboarding, setShowOnboarding] = useState(true);
+    const [userInfo, setUserInfo] = useState<{ name: string; email: string } | null>(null);
 
     const logsEndRef = useRef<HTMLDivElement>(null);
 
@@ -31,8 +34,15 @@ export default function App() {
         const savedPassword = localStorage.getItem('raleway_password');
 
         if (savedMobile && savedPassword) {
-            setConfig((prev) => ({ ...prev, MOBILE_NUMBER: savedMobile, PASSWORD: savedPassword }));
-            setShowOnboarding(false);
+            // Need an async effect for decrypting the password
+            (async () => {
+                let decodedPassword = savedPassword;
+                if (window.electronAPI && window.electronAPI.safeDecrypt) {
+                    decodedPassword = await window.electronAPI.safeDecrypt(savedPassword);
+                }
+                setConfig((prev) => ({ ...prev, MOBILE_NUMBER: savedMobile, PASSWORD: decodedPassword }));
+                setShowOnboarding(false);
+            })();
         }
 
         if (window.electronAPI) {
@@ -44,6 +54,11 @@ export default function App() {
                 } else if (event.type === 'payment_url') {
                     setPaymentUrl(event.url);
                     setIsRunning(false);
+                    setActiveTask(null);
+                } else if (event.type === 'auth_success') {
+                    setUserInfo(event.user);
+                    setIsRunning(false);
+                    setActiveTask(null);
                 }
             });
             return cleanup;
@@ -59,11 +74,38 @@ export default function App() {
         setPromptMsg('');
         setPaymentUrl('');
         setIsRunning(true);
+        setActiveTask('booking');
         if (window.electronAPI) {
             const res = await window.electronAPI.startBooking(config);
             if (!res.success) {
                 setLogs((prev) => [...prev, { type: 'log', level: 'error', message: res.error || 'Failed to start' }]);
                 setIsRunning(false);
+                setActiveTask(null);
+            }
+        }
+    };
+
+    const handleStop = async () => {
+        if (window.electronAPI) {
+            await window.electronAPI.stopBooking();
+            setIsRunning(false);
+            setActiveTask(null);
+            setLogs((prev) => [...prev, { type: 'log', level: 'warning', message: 'Process stopped by user.' }]);
+        }
+    };
+
+    const handleLoginOnly = async () => {
+        setLogs([]);
+        setPromptMsg('');
+        setPaymentUrl('');
+        setIsRunning(true);
+        setActiveTask('login');
+        if (window.electronAPI) {
+            const res = await window.electronAPI.startBooking({ ...config, LOGIN_ONLY: true });
+            if (!res.success) {
+                setLogs((prev) => [...prev, { type: 'log', level: 'error', message: res.error || 'Failed to start login' }]);
+                setIsRunning(false);
+                setActiveTask(null);
             }
         }
     };
@@ -78,9 +120,14 @@ export default function App() {
         }
     };
 
-    const handleOnboardingComplete = (credentials: { MOBILE_NUMBER: string; PASSWORD: string }) => {
+    const handleOnboardingComplete = async (credentials: { MOBILE_NUMBER: string; PASSWORD: string }) => {
         localStorage.setItem('raleway_mobile', credentials.MOBILE_NUMBER);
-        localStorage.setItem('raleway_password', credentials.PASSWORD);
+        if (window.electronAPI && window.electronAPI.safeEncrypt) {
+            const encrypted = await window.electronAPI.safeEncrypt(credentials.PASSWORD);
+            localStorage.setItem('raleway_password', encrypted);
+        } else {
+            localStorage.setItem('raleway_password', credentials.PASSWORD);
+        }
         setConfig((prev) => ({ ...prev, ...credentials }));
         setShowOnboarding(false);
     };
@@ -129,11 +176,66 @@ export default function App() {
                                         />
                                     </div>
                                 </div>
+                        <div className="space-y-6">
+                            <div className="bg-gray-900/50 border border-gray-800 rounded-lg p-6 space-y-4 shadow-xl backdrop-blur-sm">
+                                <div className="flex items-center justify-between mb-2">
+                                    <h2 className="text-lg font-bold text-green-500">Authentication</h2>
+                                    <span className="text-[10px] bg-green-500/10 text-green-500 px-2 py-0.5 rounded border border-green-500/20 uppercase tracking-tighter">Recommended</span>
+                                </div>
+                                <p className="text-xs text-gray-400 leading-relaxed">
+                                    Pre-login to bypass authentication delays during the booking window. This starts Chrome and keeps your session ready.
+                                </p>
+                                {userInfo ? (
+                                    <div className="space-y-4">
+                                        <div className="flex items-center gap-4 bg-green-500/10 border border-green-500/20 rounded-xl p-4">
+                                            <div className="w-12 h-12 bg-green-500 rounded-full flex items-center justify-center shadow-lg shadow-green-500/20">
+                                                <User size={24} className="text-white" />
+                                            </div>
+                                            <div className="flex-1 min-w-0">
+                                                <p className="text-sm font-bold text-white truncate">{userInfo.name}</p>
+                                                <p className="text-[10px] text-green-500 flex items-center gap-1">
+                                                    <CheckCircle2 size={10} />
+                                                    Session Active
+                                                </p>
+                                            </div>
+                                        </div>
+                                        <button
+                                            onClick={handleLoginOnly}
+                                            disabled={isRunning}
+                                            className={`w-full py-2.5 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-2 border ${
+                                                isRunning 
+                                                ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed' 
+                                                : 'bg-transparent text-gray-300 border-gray-700 hover:border-gray-500 hover:text-white'
+                                            }`}
+                                        >
+                                            <RefreshCcw size={14} className={activeTask === 'login' ? 'animate-spin' : ''} />
+                                            {activeTask === 'login' ? 'Refreshing...' : 'Refresh Login Session'}
+                                        </button>
+                                    </div>
+                                ) : (
+                                    <button
+                                        onClick={handleLoginOnly}
+                                        disabled={isRunning}
+                                        className={`w-full py-3 rounded-lg font-bold transition-all transform active:scale-[0.98] shadow-lg ${
+                                            isRunning 
+                                            ? activeTask === 'login' 
+                                                ? 'bg-gray-800 text-gray-500 cursor-not-allowed' 
+                                                : 'bg-gray-900/50 text-gray-600 cursor-not-allowed border border-gray-800'
+                                            : 'bg-white text-black hover:bg-gray-100'
+                                        }`}
+                                    >
+                                        {activeTask === 'login' ? 'Logging in...' : 'Pre-Login (Save Session)'}
+                                    </button>
+                                )}
+                            </div>
 
+                            <div className="bg-gray-900/50 border border-gray-800 rounded-lg p-6 space-y-4 shadow-xl backdrop-blur-sm">
+                                <h2 className="text-lg font-bold text-green-500 mb-2">Booking Details</h2>
                                 <div className="grid grid-cols-2 gap-4">
                                     <div>
                                         <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1">From City</label>
                                         <input
+                                            list="stations"
                                             type="text"
                                             className="w-full bg-gray-950 border border-gray-700 rounded p-2.5 text-sm focus:border-green-500 focus:ring-1 focus:ring-green-500 outline-none transition-colors"
                                             value={config.FROM_CITY}
@@ -143,21 +245,33 @@ export default function App() {
                                     <div>
                                         <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1">To City</label>
                                         <input
+                                            list="stations"
                                             type="text"
                                             className="w-full bg-gray-950 border border-gray-700 rounded p-2.5 text-sm focus:border-green-500 focus:ring-1 focus:ring-green-500 outline-none transition-colors"
                                             value={config.TO_CITY}
                                             onChange={(e) => setConfig({ ...config, TO_CITY: e.target.value })}
                                         />
                                     </div>
+                                    
+                                    <datalist id="stations">
+                                        {STATIONS.map((station) => (
+                                            <option key={station} value={station} />
+                                        ))}
+                                    </datalist>
                                 </div>
 
                                 <div className="grid grid-cols-2 gap-4">
                                     <div>
                                         <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1">Date</label>
                                         <input
-                                            type="text"
-                                            placeholder="DD-MMM-YYYY"
-                                            className="w-full bg-gray-950 border border-gray-700 rounded p-2.5 text-sm focus:border-green-500 focus:ring-1 focus:ring-green-500 outline-none transition-colors"
+                                            type="date"
+                                            min={new Date().toISOString().split('T')[0]}
+                                            max={(() => {
+                                                const d = new Date();
+                                                d.setDate(d.getDate() + 10);
+                                                return d.toISOString().split('T')[0];
+                                            })()}
+                                            className="w-full bg-gray-950 border border-gray-700 rounded p-2.5 text-sm focus:border-green-500 focus:ring-1 focus:ring-green-500 outline-none transition-colors [color-scheme:dark]"
                                             value={config.DATE_OF_JOURNEY}
                                             onChange={(e) => setConfig({ ...config, DATE_OF_JOURNEY: e.target.value })}
                                         />
@@ -176,20 +290,39 @@ export default function App() {
                                 <div className="grid grid-cols-2 gap-4">
                                     <div>
                                         <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1">Class</label>
-                                        <input
-                                            type="text"
+                                        <select
                                             className="w-full bg-gray-950 border border-gray-700 rounded p-2.5 text-sm focus:border-green-500 focus:ring-1 focus:ring-green-500 outline-none transition-colors"
                                             value={config.SEAT_CLASS}
                                             onChange={(e) => setConfig({ ...config, SEAT_CLASS: e.target.value })}
-                                        />
+                                        >
+                                            <option value="AC_B">AC_B</option>
+                                            <option value="AC_S">AC_S</option>
+                                            <option value="SNIGDHA">SNIGDHA</option>
+                                            <option value="F_BERTH">F_BERTH</option>
+                                            <option value="F_SEAT">F_SEAT</option>
+                                            <option value="F_CHAIR">F_CHAIR</option>
+                                            <option value="S_CHAIR">S_CHAIR</option>
+                                            <option value="SHOVAN">SHOVAN</option>
+                                            <option value="SHULOV">SHULOV</option>
+                                            <option value="AC_CHAIR">AC_CHAIR</option>
+                                        </select>
                                     </div>
                                     <div>
                                         <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1">Seat Count</label>
                                         <input
                                             type="number"
+                                            min="1"
+                                            max="4"
                                             className="w-full bg-gray-950 border border-gray-700 rounded p-2.5 text-sm focus:border-green-500 focus:ring-1 focus:ring-green-500 outline-none transition-colors"
                                             value={config.MAX_SELECTABLE_SEAT}
-                                            onChange={(e) => setConfig({ ...config, MAX_SELECTABLE_SEAT: e.target.value })}
+                                            onChange={(e) => {
+                                                const val = parseInt(e.target.value);
+                                                if (!isNaN(val) && val >= 1 && val <= 4) {
+                                                    setConfig({ ...config, MAX_SELECTABLE_SEAT: val.toString() });
+                                                } else if (e.target.value === '') {
+                                                    setConfig({ ...config, MAX_SELECTABLE_SEAT: '' });
+                                                }
+                                            }}
                                         />
                                     </div>
                                 </div>
@@ -204,22 +337,34 @@ export default function App() {
                                         onChange={(e) => setConfig({ ...config, DESIRED_SEATS: e.target.value })}
                                     />
                                 </div>
-                            </div>
 
-                            <div className="mt-8">
-                                <button
-                                    onClick={handleStart}
-                                    disabled={isRunning}
-                                    className={`w-full py-4 rounded-xl font-bold transition-all flex items-center justify-center gap-2 ${isRunning
-                                            ? 'bg-gray-800 text-gray-500 cursor-not-allowed shadow-none'
-                                            : 'bg-green-600 hover:bg-green-500 text-white shadow-lg shadow-green-600/20'
+                                <div className="flex gap-3 pt-2">
+                                    <button
+                                        onClick={handleStart}
+                                        disabled={isRunning}
+                                        className={`flex-1 py-3 rounded-lg font-bold transition-all transform active:scale-[0.98] shadow-lg ${
+                                            isRunning 
+                                            ? activeTask === 'booking'
+                                                ? 'bg-gray-800 text-gray-500 cursor-not-allowed'
+                                                : 'bg-gray-900/50 text-gray-600 cursor-not-allowed border border-gray-800'
+                                            : 'bg-green-600 text-white hover:bg-green-500 hover:shadow-green-500/20'
                                         }`}
-                                >
-                                    {isRunning ? <Square size={18} /> : <Play size={18} />}
-                                    {isRunning ? 'RUNNING AUTOMATION...' : 'START BOOKING'}
-                                </button>
+                                    >
+                                        {activeTask === 'booking' ? 'Booking in Progress...' : 'Start Booking Now'}
+                                    </button>
+                                    {isRunning && (
+                                        <button
+                                            onClick={handleStop}
+                                            className="px-6 py-3 bg-red-600 text-white rounded-lg font-bold hover:bg-red-500 transition-all transform active:scale-[0.98] shadow-lg shadow-red-500/20"
+                                        >
+                                            Stop
+                                        </button>
+                                    )}
+                                </div>
                             </div>
                         </div>
+                    </div>
+                </div>
 
                         {/* Main Content / Terminal */}
                         <div className="flex-1 flex flex-col bg-gray-950 relative">
@@ -235,8 +380,8 @@ export default function App() {
                                     <div
                                         key={i}
                                         className={`mb-1.5 ${log.level === 'error' ? 'text-red-400' :
-                                                log.level === 'input' ? 'text-blue-400 font-bold' :
-                                                    'text-green-400'
+                                            log.level === 'input' ? 'text-blue-400 font-bold' :
+                                                'text-green-400'
                                             }`}
                                     >
                                         {log.message}

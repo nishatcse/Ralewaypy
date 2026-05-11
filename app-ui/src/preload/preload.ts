@@ -5,6 +5,10 @@ const api = {
         return await ipcRenderer.invoke('start-booking', config);
     },
 
+    stopBooking: async (): Promise<{ success: boolean; error?: string }> => {
+        return await ipcRenderer.invoke('stop-booking');
+    },
+
     sendBackendInput: (input: string) => {
         ipcRenderer.send('backend-input', input);
     },
@@ -35,6 +39,14 @@ const api = {
 
     openExternal: (url: string) => {
         ipcRenderer.send('open-external', url);
+    },
+
+    safeEncrypt: async (str: string): Promise<string> => {
+        return await ipcRenderer.invoke('safe-encrypt', str);
+    },
+
+    safeDecrypt: async (str: string): Promise<string> => {
+        return await ipcRenderer.invoke('safe-decrypt', str);
     }
 };
 
