@@ -14,6 +14,12 @@ import {
     TrainFront,
     Trash2,
     User,
+    Activity,
+    MapPin,
+    ArrowRight,
+    Loader2,
+    Clock,
+    History,
 } from 'lucide-react';
 import { TitleBar } from './components/TitleBar';
 import { Onboarding } from './components/Onboarding';
@@ -45,6 +51,15 @@ type BookingConfig = {
     SCHEDULE_TIME: string;
     FLEXIBLE_SEAT_COUNT: boolean;
 };
+
+type LogEntry = {
+    type: string;
+    message: string;
+    level?: LogLevel;
+    timestamp: Date;
+};
+
+type BookingPhase = 'idle' | 'login' | 'scheduled' | 'searching' | 'booking' | 'otp' | 'payment' | 'completed' | 'failed';
 
 type LogLevel = 'error' | 'warning' | 'input' | 'success' | 'info';
 
@@ -97,7 +112,7 @@ export default function App() {
         FLEXIBLE_SEAT_COUNT: false,
     });
 
-    const [logs, setLogs] = useState<{ type: string; message: string; level?: LogLevel }[]>([]);
+    const [logs, setLogs] = useState<LogEntry[]>([]);
     const [isRunning, setIsRunning] = useState(false);
     const [activeTask, setActiveTask] = useState<'login' | 'booking' | null>(null);
     const [promptMsg, setPromptMsg] = useState('');
@@ -109,6 +124,8 @@ export default function App() {
     const [hasRestoredConfig, setHasRestoredConfig] = useState(false);
     const [credentialsSaved, setCredentialsSaved] = useState(false);
     const [logExpanded, setLogExpanded] = useState(false);
+    const [currentPhase, setCurrentPhase] = useState<BookingPhase>('idle');
+    const [serverOnline, setServerOnline] = useState(true);
     const [currentTime, setCurrentTime] = useState(new Date());
 
     const logsEndRef = useRef<HTMLDivElement>(null);
@@ -166,7 +183,28 @@ export default function App() {
         if (window.electronAPI) {
             cleanup = window.electronAPI.onBackendEvent((event: any) => {
                 if (event.type === 'log') {
-                    setLogs((prev) => [...prev, { type: 'log', message: event.message, level: event.level }]);
+                    const level = event.level || 'info';
+                    const msg = event.message || '';
+                    setLogs((prev) => [...prev, { type: 'log', message: msg, level, timestamp: new Date() }]);
+                    
+                    // Phase transitions based on log keywords
+                    if (msg.includes('Login successful') || msg.includes('Authenticated as')) {
+                        setCurrentPhase('idle'); // If login only, stay idle or special 'ready'
+                    } else if (msg.includes('Starting booking process')) {
+                        setCurrentPhase('searching');
+                    } else if (msg.includes('Retrying in')) {
+                        setCurrentPhase('searching');
+                    } else if (msg.includes('Trip found') || msg.includes('Checking seats')) {
+                        setCurrentPhase('booking');
+                    } else if (msg.includes('OTP requested')) {
+                        setCurrentPhase('otp');
+                    } else if (msg.includes('Payment URL')) {
+                        setCurrentPhase('payment');
+                    } else if (msg.includes('Booking confirmed')) {
+                        setCurrentPhase('completed');
+                    } else if (level === 'error' && !msg.includes('Retrying')) {
+                        setCurrentPhase('failed');
+                    }
                 } else if (event.type === 'prompt') {
                     setPromptMsg(event.message);
                     setLogExpanded(false);
@@ -216,7 +254,7 @@ export default function App() {
     }, [logs, logExpanded]);
 
     const appendLog = (message: string, level: LogLevel = 'info') => {
-        setLogs((prev) => [...prev, { type: 'log', message, level }]);
+        setLogs((prev) => [...prev, { type: 'log', message, level, timestamp: new Date() }]);
     };
 
     const saveCredentials = async (nextConfig = config) => {
@@ -273,6 +311,7 @@ export default function App() {
 
         setIsRunning(true);
         setActiveTask('booking');
+        setCurrentPhase('login');
         setLogExpanded(false);
         const res = await window.electronAPI.startBooking(normalizedConfig);
         if (!res.success) {
@@ -318,6 +357,7 @@ export default function App() {
 
         setIsRunning(true);
         setActiveTask('login');
+        setCurrentPhase('login');
         setLogExpanded(false);
         const res = await window.electronAPI.startBooking({ ...normalizedConfig, LOGIN_ONLY: true, REFRESH_LOGIN: true });
         if (!res.success) {
@@ -379,7 +419,10 @@ export default function App() {
                             </div>
                             <div className="min-w-0">
                                 <h1 className="text-base font-bold text-white truncate">Raleway</h1>
-                                <div className="text-[11px] text-slate-500 truncate">Booking console</div>
+                                <div className="flex items-center gap-1.5 mt-0.5">
+                                    <div className={`w-1.5 h-1.5 rounded-full ${serverOnline ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]' : 'bg-red-500'}`} />
+                                    <div className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">{serverOnline ? 'Online' : 'Offline'}</div>
+                                </div>
                             </div>
                         </div>
                         <button
@@ -398,35 +441,60 @@ export default function App() {
                     </div>
 
                     <div className="flex-1 overflow-y-auto thin-scrollbar p-5 space-y-5">
-                        <section>
-                            <div className="flex items-center justify-between mb-3">
-                                <div>
-                                    <div className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Journey</div>
-                                    <div className="text-sm text-slate-300 truncate">{config.FROM_CITY || 'From'} to {config.TO_CITY || 'To'}</div>
+                        <section className="premium-card p-4 bg-slate-900/30">
+                            <div className="flex items-center justify-between mb-4">
+                                <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Route Selection</div>
+                                <div className="flex items-center gap-2">
+                                    <button
+                                        type="button"
+                                        onClick={() => setShowScheduleModal(true)}
+                                        className={`w-8 h-8 rounded-lg border transition-all ${
+                                            config.SCHEDULE_TIME
+                                                ? 'border-amber-400/40 bg-amber-400/10 text-amber-300'
+                                                : 'border-slate-800 bg-slate-900 text-slate-500 hover:text-white'
+                                        }`}
+                                        title={config.SCHEDULE_TIME ? `Scheduled for ${config.SCHEDULE_TIME}` : 'Schedule booking'}
+                                    >
+                                        <CalendarClock size={14} />
+                                    </button>
                                 </div>
-                                <button
-                                    type="button"
-                                    onClick={() => setShowScheduleModal(true)}
-                                    className={`w-9 h-9 rounded-md border flex items-center justify-center ${
-                                        config.SCHEDULE_TIME
-                                            ? 'border-amber-400/40 bg-amber-400/10 text-amber-300'
-                                            : 'border-slate-700 bg-slate-900 text-slate-400 hover:text-white'
-                                    }`}
-                                    title={config.SCHEDULE_TIME ? `Scheduled for ${config.SCHEDULE_TIME}` : 'Schedule booking'}
-                                >
-                                    <CalendarClock size={17} />
-                                </button>
                             </div>
 
-                            <div className="space-y-3">
+                            <div className="route-visual px-1">
+                                <div className="flex flex-col items-center gap-1">
+                                    <div className="route-dot" />
+                                    <div className="text-[10px] font-bold text-slate-400">{config.FROM_CITY || 'From'}</div>
+                                </div>
+                                <div className="flex-1 px-4">
+                                    <div className="route-line" />
+                                    {isRunning && <div className="route-line-active w-full" />}
+                                    <div className="flex justify-center -mt-3.5 relative z-10">
+                                        <div className="bg-slate-900 p-1 rounded-full border border-slate-800">
+                                            <TrainFront size={12} className={isRunning ? 'text-cyan-400 animate-pulse' : 'text-slate-600'} />
+                                        </div>
+                                    </div>
+                                </div>
+                                <div className="flex flex-col items-center gap-1">
+                                    <div className="route-dot destination" />
+                                    <div className="text-[10px] font-bold text-slate-400">{config.TO_CITY || 'To'}</div>
+                                </div>
+                            </div>
+
+                            <div className="space-y-3 mt-4">
                                 <div className="grid grid-cols-2 gap-3">
                                     <div>
                                         <label className={labelClass}>From</label>
-                                        <input list="stations" className={inputClass} value={config.FROM_CITY} onChange={(e) => setConfig({ ...config, FROM_CITY: e.target.value })} />
+                                        <div className="relative">
+                                            <MapPin size={14} className="absolute left-3 top-2.5 text-slate-500" />
+                                            <input list="stations" className={`${inputClass} pl-9`} value={config.FROM_CITY} onChange={(e) => setConfig({ ...config, FROM_CITY: e.target.value })} />
+                                        </div>
                                     </div>
                                     <div>
                                         <label className={labelClass}>To</label>
-                                        <input list="stations" className={inputClass} value={config.TO_CITY} onChange={(e) => setConfig({ ...config, TO_CITY: e.target.value })} />
+                                        <div className="relative">
+                                            <MapPin size={14} className="absolute left-3 top-2.5 text-slate-500" />
+                                            <input list="stations" className={`${inputClass} pl-9`} value={config.TO_CITY} onChange={(e) => setConfig({ ...config, TO_CITY: e.target.value })} />
+                                        </div>
                                     </div>
                                 </div>
 
@@ -661,23 +729,64 @@ export default function App() {
                             </section>
                         </div>
 
-                        <section className={`${panelClass} p-5`}>
-                            <div className="flex items-center justify-between gap-4">
+                        <section className="premium-card p-6 bg-slate-900/40">
+                            <div className="flex items-center justify-between gap-4 mb-6">
                                 <div>
-                                    <div className="text-xs font-bold uppercase tracking-widest text-slate-500">Execution flow</div>
-                                    <div className="text-sm text-slate-400 mt-1">The app keeps the session ready, then searches and reserves when booking starts.</div>
+                                    <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-cyan-400">Execution Flow</div>
+                                    <div className="text-sm text-slate-400 mt-1">Real-time booking stage tracking</div>
                                 </div>
-                                <div className={`px-3 py-1 rounded-full text-xs font-bold border ${isRunning ? 'text-emerald-300 border-emerald-500/30 bg-emerald-500/10' : 'text-slate-500 border-slate-800 bg-slate-950'}`}>
+                                <div className={`status-pill ${isRunning ? 'active pulse-emerald' : 'idle'}`}>
                                     {statusText}
                                 </div>
                             </div>
-                            <div className="grid grid-cols-5 gap-3 mt-5">
-                                {['Session', config.SCHEDULE_TIME ? 'Schedule' : 'Immediate', 'Seats', 'OTP', 'Payment'].map((step, index) => (
-                                    <div key={`${step}-${index}`} className="rounded-md border border-slate-800 bg-slate-950 px-3 py-3">
-                                        <div className="text-[10px] font-bold uppercase tracking-widest text-slate-600">Step {index + 1}</div>
-                                        <div className="text-sm font-bold text-slate-200 mt-1">{step}</div>
-                                    </div>
-                                ))}
+                            
+                            <div className="relative">
+                                {/* Progress Line */}
+                                <div className="absolute top-[18px] left-0 right-0 h-1 bg-slate-800 rounded-full overflow-hidden">
+                                    <div 
+                                        className="h-full bg-gradient-to-r from-cyan-500 to-emerald-500 transition-all duration-1000"
+                                        style={{ 
+                                            width: currentPhase === 'idle' ? '0%' :
+                                                   currentPhase === 'login' ? '20%' :
+                                                   currentPhase === 'searching' ? '40%' :
+                                                   currentPhase === 'booking' ? '60%' :
+                                                   currentPhase === 'otp' ? '80%' :
+                                                   currentPhase === 'payment' ? '90%' :
+                                                   currentPhase === 'completed' ? '100%' : '0%'
+                                        }}
+                                    />
+                                </div>
+
+                                <div className="grid grid-cols-5 gap-2 relative z-10">
+                                    {[
+                                        { id: 'login', label: 'Auth', icon: ShieldCheck },
+                                        { id: 'searching', label: 'Search', icon: RefreshCcw },
+                                        { id: 'booking', label: 'Reserve', icon: TrainFront },
+                                        { id: 'otp', label: 'Verify', icon: ShieldCheck },
+                                        { id: 'payment', label: 'Pay', icon: ExternalLink }
+                                    ].map((step, index) => {
+                                        const phases = ['idle', 'login', 'searching', 'booking', 'otp', 'payment', 'completed'];
+                                        const currentIdx = phases.indexOf(currentPhase);
+                                        const stepIdx = phases.indexOf(step.id);
+                                        const isCompleted = currentIdx > stepIdx || currentPhase === 'completed';
+                                        const isActive = step.id === currentPhase;
+
+                                        return (
+                                            <div key={step.id} className="flex flex-col items-center">
+                                                <div className={`w-10 h-10 rounded-full flex items-center justify-center border-2 transition-all duration-500 ${
+                                                    isCompleted ? 'bg-emerald-500 border-emerald-500 text-slate-950' :
+                                                    isActive ? 'bg-cyan-500 border-cyan-500 text-slate-950 shadow-[0_0_15px_rgba(6,182,212,0.4)]' :
+                                                    'bg-slate-900 border-slate-800 text-slate-500'
+                                                }`}>
+                                                    {isCompleted ? <CheckCircle2 size={18} /> : <step.icon size={18} className={isActive ? 'animate-spin-slow' : ''} />}
+                                                </div>
+                                                <div className={`text-[10px] font-bold uppercase tracking-wider mt-2 ${isActive ? 'text-cyan-400' : isCompleted ? 'text-emerald-400' : 'text-slate-600'}`}>
+                                                    {step.label}
+                                                </div>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
                             </div>
                         </section>
                     </div>
@@ -751,13 +860,28 @@ export default function App() {
                     </div>
                 </div>
                 {logExpanded && (
-                    <div className="h-[calc(18rem-3rem)] overflow-y-auto thin-scrollbar px-5 pb-4 font-mono text-sm leading-relaxed">
-                        {logs.length === 0 && <div className="h-full flex items-center justify-center text-xs text-slate-600">No activity yet.</div>}
-                        {logs.map((log, i) => (
-                            <div key={i} className={`mb-1.5 ${logClassName(log.level)}`}>
-                                {log.message}
-                            </div>
-                        ))}
+                    <div className="h-[calc(18rem-3rem)] overflow-y-auto thin-scrollbar px-10 py-6 font-mono text-sm leading-relaxed">
+                        {logs.length === 0 && <div className="h-full flex items-center justify-center text-xs text-slate-600 font-sans">No activity yet. Terminal is ready.</div>}
+                        <div className="timeline">
+                            {logs.map((log, i) => (
+                                <div key={i} className="timeline-item">
+                                    <div className={`timeline-marker ${log.level || 'info'}`} />
+                                    <div className="timeline-content">
+                                        <div className="flex items-center gap-3 mb-1">
+                                            <span className="text-[10px] text-slate-600 font-bold uppercase tracking-widest">
+                                                {log.timestamp.toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                                            </span>
+                                            <span className={`status-pill ${log.level || 'info'} scale-75 origin-left`}>
+                                                {log.level || 'info'}
+                                            </span>
+                                        </div>
+                                        <div className={`${logClassName(log.level)} text-slate-300 break-words`}>
+                                            {log.message}
+                                        </div>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
                         <div ref={logsEndRef} />
                     </div>
                 )}
