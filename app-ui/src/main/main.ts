@@ -80,6 +80,32 @@ function createWindow(): void {
         mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
     }
 
+    // Add standard context menu for text operations
+    mainWindow.webContents.on('context-menu', (_, props) => {
+        const { selectionText, isEditable } = props;
+        const menuTemplate: any[] = [];
+
+        if (isEditable) {
+            menuTemplate.push(
+                { role: 'cut' },
+                { role: 'copy' },
+                { role: 'paste' },
+                { type: 'separator' }
+            );
+        } else if (selectionText && selectionText.trim() !== '') {
+            menuTemplate.push(
+                { role: 'copy' },
+                { type: 'separator' }
+            );
+        }
+
+        if (menuTemplate.length > 0 || isEditable) {
+            menuTemplate.push({ role: 'selectAll' });
+            const menu = Menu.buildFromTemplate(menuTemplate);
+            menu.popup({ window: mainWindow! });
+        }
+    });
+
     mainWindow.on('closed', () => {
         mainWindow = null;
         if (pythonProcess) {

@@ -287,18 +287,37 @@ def wait_for_js_value(ws_url, js, timeout=10, interval=0.5, refresh_ws=False):
 
 
 def get_turnstile_token(ws_url, force=False):
-    """Read the current Turnstile token without forcing widget resets."""
+    """Read the current Turnstile token, with an option to force a reset if stale."""
     global _cached_turnstile, _cached_turnstile_time
 
-    # If we have a cached token that hasn't been used yet, return it
+    # 1. If we have a cached token that is fresh, use it
     if not force and _cached_turnstile and (time.time() - _cached_turnstile_time) < TURNSTILE_TTL:
         token = _cached_turnstile
-        # Mark as used — next call will need a fresh one
         _cached_turnstile = None
-        _cached_turnstile_time = 0
         return token
 
-    # Inject watcher if not present
+    # 2. If forced or we suspect stale token, trigger a reset on the page
+    if force:
+        print(f"{Fore.YELLOW}Forcing Turnstile reset on page...")
+        exec_js(ws_url, """
+            try {
+                if (window.turnstile) {
+                    turnstile.reset();
+                    localStorage.removeItem('last_seen_cft');
+                    localStorage.removeItem('last_cft_time');
+                } else {
+                    // Fallback: clear the input to maybe trigger re-solve
+                    const inp = document.querySelector('input[name="cf-turnstile-response"]');
+                    if (inp) inp.value = '';
+                }
+            } catch(e) {}
+        """)
+        # Clear cache immediately
+        _cached_turnstile = None
+        _cached_turnstile_time = 0
+        time.sleep(1) # Brief pause for widget to react
+
+    # 3. Inject watcher to ensure we capture the new token
     exec_js(ws_url, WATCHER_JS)
 
     # Try to get current token and its age from the page
@@ -355,11 +374,13 @@ def get_auth_headers(ws_url, force=False):
     return None
 
 
-def invalidate_turnstile():
-    """Force turnstile token refresh on next API call."""
+def invalidate_turnstile(ws_url=None):
+    """Force turnstile token refresh on next API call, and optionally reset the page widget."""
     global _cached_turnstile, _cached_turnstile_time
     _cached_turnstile = None
     _cached_turnstile_time = 0
+    if ws_url:
+        get_turnstile_token(ws_url, force=True)
 
 
 def api_request(method, path, params=None, json_data=None):
@@ -368,98 +389,90 @@ def api_request(method, path, params=None, json_data=None):
         print(f"{Fore.RED}Cannot connect to Chrome. Is it running with --remote-debugging-port=9222?")
         return None
 
-    # Max 2 attempts: if first fails with 422, refresh Turnstile and retry
-    for attempt in range(2):
-        headers = get_auth_headers(ws_url)
-        if not headers or not headers.get('token'):
-            print(f"{Fore.RED}No auth token found in Chrome localStorage. Are you logged in?")
-            return None
+    headers = get_auth_headers(ws_url)
+    if not headers or not headers.get('token'):
+        print(f"{Fore.RED}No auth token found in Chrome localStorage. Are you logged in?")
+        return None
 
-        current_params = params.copy() if params else {}
-        cft = get_turnstile_token(ws_url)
-        
-        # Add Turnstile to params for GET, and both Body/Headers for others
+    if params is None:
+        params = {}
+    cft = get_turnstile_token(ws_url)
+    
+    # Add Turnstile to params for GET, and both Body/Headers for others
+    if cft:
+        params['cft_response'] = cft
+
+    url = f"{API_BASE}{path}"
+    if params:
+        url += "?" + urllib.parse.urlencode(params)
+
+    # Escape single quotes in token values for JS string safety
+    token_escaped = headers['token'].replace("'", "\\'")
+    uudid_escaped = headers['uudid'].replace("'", "\\'")
+    ssdk_escaped = headers['ssdk'].replace("'", "\\'")
+    cft_escaped = cft.replace("'", "\\'") if cft else ""
+
+    # Check if this endpoint needs the X-Action-Token header
+    needs_action_token = any(ep in path for ep in ['reserve-seat', 'release-seat'])
+
+    js = f"""(async () => {{
+        const opts = {{
+            method: '{method}',
+            headers: {{
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+                'Authorization': 'Bearer {token_escaped}',
+                'x-device-id': '{uudid_escaped}',
+                'x-device-key': '{ssdk_escaped}',
+                'x-requested-with': 'XMLHttpRequest'
+            }}
+        }};
+        if ('{cft_escaped}') {{
+            opts.headers['X-Turnstile-Token'] = '{cft_escaped}';
+        }}
+        """
+
+    # Add X-Action-Token header for reserve-seat / release-seat
+    if needs_action_token:
+        js += """
+        const actionToken = sessionStorage.getItem('atk') || '';
+        if (actionToken) {
+            opts.headers['X-Action-Token'] = actionToken;
+        }
+        """
+
+    if json_data:
+        # If it's a mutation, also include Turnstile in the body if available
         if cft:
-            current_params['cft_response'] = cft
+            json_data['cft_response'] = cft
+        js += f"opts.body = JSON.stringify({json.dumps(json_data)});"
 
-        url = f"{API_BASE}{path}"
-        if current_params:
-            url += "?" + urllib.parse.urlencode(current_params)
+    js += f"""
+        try {{
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 45000);
+            opts.signal = controller.signal;
+            const r = await fetch('{url}', opts);
+            clearTimeout(timeout);
+            const t = await r.text();
 
-        # Escape single quotes in token values for JS string safety
-        token_escaped = headers['token'].replace("'", "\\'")
-        uudid_escaped = headers['uudid'].replace("'", "\\'")
-        ssdk_escaped = headers['ssdk'].replace("'", "\\'")
-        cft_escaped = cft.replace("'", "\\'") if cft else ""
-
-        # Check if this endpoint needs the X-Action-Token header
-        needs_action_token = any(ep in path for ep in ['reserve-seat', 'release-seat'])
-
-        js = f"""(async () => {{
-            const opts = {{
-                method: '{method}',
-                headers: {{
-                    'Content-Type': 'application/json',
-                    'Accept': 'application/json',
-                    'Authorization': 'Bearer {token_escaped}',
-                    'x-device-id': '{uudid_escaped}',
-                    'x-device-key': '{ssdk_escaped}',
-                    'x-requested-with': 'XMLHttpRequest'
-                }}
-            }};
-            if ('{cft_escaped}') {{
-                opts.headers['X-Turnstile-Token'] = '{cft_escaped}';
+            // Capture X-Action-Token from response and store in sessionStorage
+            const actionTokenResp = r.headers.get('X-Action-Token');
+            if (actionTokenResp) {{
+                sessionStorage.setItem('atk', actionTokenResp);
             }}
-            """
 
-        if needs_action_token:
-            js += """
-            const actionToken = sessionStorage.getItem('atk') || '';
-            if (actionToken) {
-                opts.headers['X-Action-Token'] = actionToken;
-            }
-            """
+            return JSON.stringify({{s: r.status, b: t}});
+        }} catch(e) {{
+            return JSON.stringify({{s: 0, b: e.message}});
+        }}
+    }})()"""
 
-        if json_data:
-            current_json = json_data.copy()
-            if cft:
-                current_json['cft_response'] = cft
-            js += f"opts.body = JSON.stringify({json.dumps(current_json)});"
-
-        js += f"""
-            try {{
-                const controller = new AbortController();
-                const timeout = setTimeout(() => controller.abort(), 45000);
-                opts.signal = controller.signal;
-                const r = await fetch('{url}', opts);
-                clearTimeout(timeout);
-                const t = await r.text();
-
-                const actionTokenResp = r.headers.get('X-Action-Token');
-                if (actionTokenResp) {{
-                    sessionStorage.setItem('atk', actionTokenResp);
-                }}
-
-                return JSON.stringify({{s: r.status, b: t}});
-            }} catch(e) {{
-                return JSON.stringify({{s: 0, b: e.message}});
-            }}
-        }})()"""
-
-        result_str = exec_js(ws_url, js, await_promise=True)
-        if not result_str:
-            return None
-            
-        try:
-            result = json.loads(result_str)
-            status = result.get('s')
-            
-            return result
-        except Exception as e:
-            print(f"{Fore.RED}Error parsing API result: {e}")
-            return None
-
-    return None
+    result = exec_js(ws_url, js, await_promise=True)
+    try:
+        return json.loads(result) if result else None
+    except:
+        return None
 
 
 def auto_login_if_needed(ws_url):
@@ -673,30 +686,9 @@ def fetch_trip_details():
     # Format date for the search-trips API
     formatted_date = date_of_journey
 
+    start_time = time.time()
     retry_delay = 1
     while True:
-        # Determine retry interval based on proximity to 08:00:00 AM release
-        now = datetime.now()
-        target = now.replace(hour=8, minute=0, second=0, microsecond=0)
-        diff = (target - now).total_seconds()
-        
-        if diff > 3600:    # Before 07:00:00 AM
-            wait_time = 3600
-        elif diff > 300:   # 07:00:00 AM - 07:55:00 AM
-            wait_time = 600
-        elif diff > 60:    # 07:55:00 AM - 07:59:00 AM
-            wait_time = 10
-        elif diff > 10:    # 07:59:00 AM - 07:59:50 AM
-            wait_time = 5
-        else:              # After 07:59:50 AM
-            wait_time = 1
-            
-        # Ensure we don't sleep past the next logical threshold
-        for threshold in [3600, 300, 60, 10]:
-            if diff > threshold:
-                wait_time = min(wait_time, int(diff - threshold) + 1)
-                break
-
         r = api_request("GET", "/v1.0/web/bookings/search-trips-v2", {"from_city": from_city, "to_city": to_city, "date_of_journey": formatted_date, "seat_class": seat_class})
 
         if r and r.get('s') == 200:
@@ -705,8 +697,8 @@ def fetch_trip_details():
             except:
                 data = []
             if not data:
-                print(f"{Fore.YELLOW}Trip details not available yet. Retrying in {wait_time} second(s)...")
-                time.sleep(wait_time)
+                print(f"{Fore.YELLOW}Trip details not available yet. Retrying in 1 second(s)...")
+                time.sleep(1)
                 continue
             for train in data:
                 if train.get("train_model") == str(train_number):
@@ -716,10 +708,11 @@ def fetch_trip_details():
                             trip_route_id = seat.get("trip_route_id")
                             boarding_point_id = train.get("boarding_points", [{}])[0].get("trip_point_id", None)
                             train_name = train.get("trip_number")
-                            print(f"{Fore.GREEN}Trip details found! Train: {train_name}, Trip ID: {trip_id}, Route ID: {trip_route_id}, Boarding Point ID: {boarding_point_id}")
+                            elapsed = time.time() - start_time
+                            print(f"{Fore.GREEN}Trip details found! Train: {train_name} (Time taken: {elapsed:.2f}s)")
                             return trip_id, trip_route_id, boarding_point_id, train_name
-            print(f"{Fore.YELLOW}Train {train_number} / {seat_class} not available yet. Retrying in {wait_time} second(s)...")
-            time.sleep(wait_time)
+            print(f"{Fore.YELLOW}Train {train_number} / {seat_class} not available yet. Retrying in 1 second(s)...")
+            time.sleep(1)
             retry_delay = 1  # Reset backoff on 200 OK
         elif r and r.get('s') in [500, 502, 503, 504]:
             print(f"{Fore.YELLOW}Server overloaded ({r['s']}). Retrying in {retry_delay} second(s)...")
@@ -733,9 +726,10 @@ def fetch_trip_details():
             time.sleep(1)
 
 
-def is_booking_available():
+def is_booking_available(overall_start_time=None):
     consecutive_failures = 0
     MAX_TRANSIENT_RETRIES = 30  # Give up after 30 consecutive transient 422s
+    poll_start_time = time.time()
 
     while True:
         r = api_request("GET", "/v1.0/web/bookings/seat-layout", {"trip_id": trip_id, "trip_route_id": trip_route_id})
@@ -748,7 +742,12 @@ def is_booking_available():
             try:
                 data = json.loads(r['b'])
                 if "seatLayout" in data.get("data", {}):
-                    print(f"{Fore.GREEN}Booking is now available!")
+                    poll_elapsed = time.time() - poll_start_time
+                    if overall_start_time:
+                        total_elapsed = time.time() - overall_start_time
+                        print(f"{Fore.GREEN}Booking is now available! (Polling time: {poll_elapsed:.2f}s, Total Discovery Time: {total_elapsed:.2f}s)")
+                    else:
+                        print(f"{Fore.GREEN}Booking is now available! (Polling time: {poll_elapsed:.2f}s)")
                     consecutive_failures = 0
                     return data["data"]["seatLayout"]
             except:
@@ -772,9 +771,9 @@ def is_booking_available():
 
                 # --- RETRYABLE: Page verification issues ---
                 if error_key in ("TURNSTILE_TOKEN_REQUIRED", "TURNSTILE_VERIFICATION_FAILED"):
-                    print(f"{Fore.YELLOW}Page verification token not accepted. Waiting before retry...")
-                    invalidate_turnstile()
-                    time.sleep(5)
+                    print(f"{Fore.YELLOW}Verification token rejected. Forcing refresh...")
+                    invalidate_turnstile(get_ws_url())
+                    time.sleep(2)
                     continue
 
                 # --- RETRYABLE: Booking window not open yet ---
@@ -900,12 +899,12 @@ def release_ticket_ids(ticket_ids, reason=""):
             print(f"{Fore.YELLOW}Could not release seat {ticket_id}: {e}")
 
 
-def reserve_seat():
+def reserve_seat(overall_start_time=None):
     global trip_id, trip_route_id, boarding_point_id, train_name
     print(f"{Fore.YELLOW}Waiting for seat layout availability...")
 
     while True:
-        seat_layout = is_booking_available()
+        seat_layout = is_booking_available(overall_start_time)
         if not seat_layout:
             print(f"{Fore.RED}Seat layout could not be retrieved. Retrying in 2s...")
             time.sleep(2)
@@ -1007,7 +1006,6 @@ def ensure_on_search_page():
                 
                 if token and age < TURNSTILE_TTL:
                     print(f"{Fore.GREEN}Page verification token ready (age: {age:.1f}s).")
-                    invalidate_turnstile()
                     return
             except:
                 pass
@@ -1195,11 +1193,20 @@ def fresh_login():
 
     # Step 1: Wait for homepage to fully load (Angular bootstrap + Cloudflare JS)
     print(f"{Fore.YELLOW}Step 1/6: Waiting for homepage to load...")
-    ws_url = get_ws_url(force=True)
-    if not ws_url:
-        print(f"{Fore.RED}Cannot connect to Chrome for login.")
-        return False
     ws_url, _ = wait_for_js_value(ws_url, "document.readyState === 'complete' || document.readyState === 'interactive'", timeout=8, interval=0.5, refresh_ws=True)
+
+    # Step 0.5: Force clear any existing session in browser to reflect new credentials
+    print(f"{Fore.YELLOW}Ensuring clean session for fresh login...")
+    exec_js(ws_url, "localStorage.clear(); sessionStorage.clear();")
+    # Try to find and click logout if visible
+    exec_js(ws_url, '''(() => {
+        const logoutBtn = Array.from(document.querySelectorAll('a, button')).find(el => {
+            const t = el.textContent.toLowerCase();
+            return t.includes('logout') || t.includes('sign out');
+        });
+        if (logoutBtn) logoutBtn.click();
+    })()''')
+    time.sleep(1) # Wait for potential logout redirect
 
     current = exec_js(ws_url, "location.href")
     print(f"{Fore.CYAN}Current page: {current}")
@@ -1367,8 +1374,6 @@ def main():
             print(f"{Fore.GREEN}Session is now active. You can start booking now.")
             exit()
 
-        user_email, user_phone, user_name = extract_user_info_from_token(auth_key)
-
         # Scheduling applies only to booking actions. Login/session refresh happens immediately.
         schedule_time = config.get('SCHEDULE_TIME')
         if schedule_time:
@@ -1378,18 +1383,24 @@ def main():
         # Navigate to search page so Turnstile token is available
         ensure_on_search_page()
 
+        search_start = time.time()
         fetch_trip_details()
+        print(f"{Fore.GREEN}Trip search completed! (Time taken: {time.time() - search_start:.2f}s)")
 
-        reserved_ticket_ids, ticket_id_map = reserve_seat()
+        reserve_start = time.time()
+        reserved_ticket_ids, ticket_id_map = reserve_seat(overall_start_time=search_start)
+        print(f"{Fore.GREEN}Seat reservation completed! (Time taken: {time.time() - reserve_start:.2f}s)")
+        
         _reserved_tickets_for_cleanup = reserved_ticket_ids  # Track for cleanup if stopped
 
         otp_payload = {"trip_id": trip_id, "trip_route_id": trip_route_id, "ticket_ids": reserved_ticket_ids}
 
+        otp_send_start = time.time()
         r = api_request("POST", "/v1.0/web/bookings/passenger-details", json_data=otp_payload)
         if r and r['s'] == 200:
             try:
                 if json.loads(r['b'])["data"]["success"]:
-                    print(f"{Fore.GREEN}OTP sent successfully!")
+                    print(f"{Fore.GREEN}OTP sent successfully! (Time taken: {time.time() - otp_send_start:.2f}s)")
                 else:
                     print(f"{Fore.RED}Failed to send OTP: {r['b'][:200]}")
                     return
@@ -1429,10 +1440,11 @@ def main():
                 return
 
             verify_payload = {**otp_payload, "otp": otp}
+            verify_start = time.time()
             r = api_request("POST", "/v1.0/web/bookings/verify-otp", json_data=verify_payload)
             
             if r and r['s'] == 200:
-                print(f"{Fore.GREEN}OTP verified successfully!")
+                print(f"{Fore.GREEN}OTP verified successfully! (Time taken: {time.time() - verify_start:.2f}s)")
                 otp_verified = True
                 builtins.print(json.dumps({"type": "prompt", "message": ""}), flush=True)
                 break
@@ -1495,6 +1507,7 @@ def main():
             else:
                 confirm_payload["selected_mobile_transaction"] = pm[choice][1]
 
+        confirm_start = time.time()
         r = api_request("PATCH", "/v1.0/web/bookings/confirm", json_data=confirm_payload)
         if r and r['s'] == 200:
             try:
@@ -1502,7 +1515,7 @@ def main():
                 if "redirectUrl" in data.get("data", {}):
                     url = data["data"]["redirectUrl"]
                     _reserved_tickets_for_cleanup = [] # Clear cleanup list as they are now confirmed
-                    print("Booking confirmed successfully!")
+                    print(f"Booking confirmed successfully! (Time taken: {time.time() - confirm_start:.2f}s)")
                     print("IMPORTANT: This payment link can be used ONLY ONCE.")
                     # Emit specialized JSON event for UI
                     builtins.print(json.dumps({"type": "payment_url", "url": url}), flush=True)
