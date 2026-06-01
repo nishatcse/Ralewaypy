@@ -6,6 +6,7 @@ import {
     ChevronUp,
     ExternalLink,
     Lock,
+    Minus,
     Play,
     RefreshCcw,
     Settings,
@@ -22,7 +23,8 @@ import {
     CreditCard,
     MapPin,
     Hash,
-    Calendar
+    Calendar,
+    X
 } from 'lucide-react';
 import { TitleBar } from './components/TitleBar';
 import { Onboarding } from './components/Onboarding';
@@ -353,8 +355,12 @@ export default function App() {
 
         // Always refresh login if the user changed credentials OR if explicitly requested
         const savedMobile = localStorage.getItem('raleway_mobile');
+        const savedPass = localStorage.getItem('raleway_password');
         const lastSessionMobile = localStorage.getItem('raleway_last_session_mobile');
-        const forceRefresh = normalizedConfig.REFRESH_LOGIN || (savedMobile !== lastSessionMobile);
+        const lastSessionPass = localStorage.getItem('raleway_last_session_pass');
+        
+        const credentialsChanged = (savedMobile !== lastSessionMobile) || (savedPass !== lastSessionPass);
+        const forceRefresh = normalizedConfig.REFRESH_LOGIN || credentialsChanged;
 
         setIsRunning(true);
         setActiveTask('booking');
@@ -362,6 +368,7 @@ export default function App() {
         const res = await window.electronAPI.startBooking({ ...normalizedConfig, REFRESH_LOGIN: forceRefresh });
         if (res.success) {
             localStorage.setItem('raleway_last_session_mobile', normalizedConfig.MOBILE_NUMBER);
+            localStorage.setItem('raleway_last_session_pass', normalizedConfig.PASSWORD);
         } else {
             setLogs((prev) => [...prev, { type: 'log', level: 'error', message: res.error || 'Failed to start' }]);
             setIsRunning(false);
@@ -476,6 +483,18 @@ export default function App() {
 
     const latestLog = logs.length ? logs[logs.length - 1].message : 'No activity yet.';
     const statusText = activeTask === 'login' ? 'Pre-login running' : activeTask === 'booking' ? 'Booking running' : 'Idle';
+
+    const handleMinimize = () => {
+        if ((window as any).electronAPI) (window as any).electronAPI.minimizeWindow();
+    };
+
+    const handleMaximize = () => {
+        if ((window as any).electronAPI) (window as any).electronAPI.maximizeWindow();
+    };
+
+    const handleClose = () => {
+        if ((window as any).electronAPI) (window as any).electronAPI.closeWindow();
+    };
 
     if (showOnboarding) {
         return (
@@ -883,40 +902,27 @@ export default function App() {
 
                         <div className="grid grid-cols-1 md:grid-cols-2 2xl:grid-cols-4 gap-4">
                             {/* Authentication Card */}
-                            <section className={`${panelClass} p-5 2xl:col-span-2 group transition-all hover:bg-white/[0.03]`}>
+                            <section className={`${panelClass} p-5 group transition-all hover:bg-white/[0.03]`}>
                                 <div className="flex items-start justify-between gap-4">
                                     <div className="flex-1 min-w-0">
                                         <div className="flex items-center gap-2 text-cyan-400 mb-4">
-                                            <div className="p-1.5 rounded-md bg-cyan-500/10">
+                                            <div className="p-1.5 rounded-md bg-cyan-500/10 flex items-center justify-center">
                                                 <ShieldCheck size={16} />
                                             </div>
                                             <span className="text-[10px] font-black uppercase tracking-[0.2em]">Authentication</span>
+                                            <div className={`ml-1 px-2 py-0.5 rounded text-[8px] font-black uppercase tracking-widest shrink-0 ${userInfo ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-amber-500/10 text-amber-400 border border-amber-500/20'}`}>
+                                                {userInfo ? 'Verified' : 'Unverified'}
+                                            </div>
                                         </div>
                                         
                                         <div className="space-y-3">
-                                            <div className="flex items-center gap-4">
-                                                <div className="text-2xl font-bold text-white tracking-tight">
-                                                    {userInfo ? userInfo.name : 'No Active Session'}
-                                                </div>
-                                                <div className={`px-2 py-0.5 rounded text-[9px] font-black uppercase tracking-widest ${userInfo ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-amber-500/10 text-amber-400 border border-amber-500/20'}`}>
-                                                    {userInfo ? 'Verified' : 'Unverified'}
-                                                </div>
+                                            <div className="text-xl font-bold text-white tracking-tight truncate">
+                                                {userInfo ? userInfo.name : 'No Active Session'}
                                             </div>
                                             
-                                            <div className="flex items-center gap-6">
-                                                <div className="flex flex-col gap-0.5">
-                                                    <span className="text-[8px] font-bold text-slate-600 uppercase tracking-widest">Mobile</span>
-                                                    <span className="text-xs font-mono text-slate-300">{maskPhone(config.MOBILE_NUMBER)}</span>
-                                                </div>
-                                                <div className="flex flex-col gap-0.5">
-                                                    <span className="text-[8px] font-bold text-slate-600 uppercase tracking-widest">Security</span>
-                                                    <div className="flex items-center gap-1.5 text-xs text-slate-300">
-                                                        <div className="flex gap-0.5">
-                                                            {[1,2,3,4,5,6].map(i => <div key={i} className="w-1 h-1 rounded-full bg-slate-700" />)}
-                                                        </div>
-                                                        <Lock size={10} className="text-slate-600" />
-                                                    </div>
-                                                </div>
+                                            <div className="flex flex-col gap-0.5">
+                                                <span className="text-[8px] font-bold text-slate-600 uppercase tracking-widest">Mobile</span>
+                                                <span className="text-xs font-mono text-slate-300">{maskPhone(config.MOBILE_NUMBER)}</span>
                                             </div>
                                         </div>
                                     </div>
@@ -996,6 +1002,48 @@ export default function App() {
                                     <div className="flex items-center justify-between p-2 rounded-lg bg-slate-950/50 border border-white/5">
                                         <div className="text-[9px] font-black text-slate-600 uppercase tracking-widest">Class</div>
                                         <div className="text-[10px] font-bold text-cyan-400 font-mono">{config.SEAT_CLASS}</div>
+                                    </div>
+                                </div>
+                            </section>
+
+                            {/* Safety Protocol Card */}
+                            <section className={`${panelClass} p-5 group transition-all hover:bg-white/[0.03] border-t-2 border-t-rose-500/30`}>
+                                <div className="flex items-center justify-between mb-4">
+                                    <div className="flex items-center gap-2 text-rose-400">
+                                        <div className="p-1.5 rounded-md bg-rose-500/10">
+                                            <ShieldCheck size={16} />
+                                        </div>
+                                        <span className="text-[10px] font-black uppercase tracking-[0.2em]">Railway Safety</span>
+                                    </div>
+                                    <div className="flex items-center gap-1">
+                                        <div className="w-1 h-1 rounded-full bg-emerald-500 animate-pulse" />
+                                        <span className="text-[7px] font-black text-emerald-500 uppercase tracking-widest">Active</span>
+                                    </div>
+                                </div>
+                                
+                                <div className="space-y-2.5">
+                                    <div className="p-2 rounded-lg bg-slate-950/50 border border-white/5 flex flex-col gap-1">
+                                        <div className="flex items-center justify-between">
+                                            <span className="text-[8px] font-black text-slate-500 uppercase tracking-widest">URL Request Limit</span>
+                                            <span className="text-[8px] font-bold text-slate-300 tabular-nums">10/min</span>
+                                        </div>
+                                        <div className="w-full bg-slate-900 h-1 rounded-full overflow-hidden">
+                                            <div className="bg-cyan-500 h-full w-[40%] transition-all duration-1000" />
+                                        </div>
+                                    </div>
+
+                                    <div className="p-2 rounded-lg bg-slate-950/50 border border-white/5 flex flex-col gap-1">
+                                        <div className="flex items-center justify-between">
+                                            <span className="text-[8px] font-black text-slate-500 uppercase tracking-widest">Selection Limit</span>
+                                            <span className="text-[8px] font-bold text-slate-300 tabular-nums">12/15min</span>
+                                        </div>
+                                        <div className="w-full bg-slate-900 h-1 rounded-full overflow-hidden">
+                                            <div className="bg-amber-500 h-full w-[20%] transition-all duration-1000" />
+                                        </div>
+                                    </div>
+
+                                    <div className="text-[8px] text-slate-500 font-medium leading-relaxed italic px-1">
+                                        Proactive throttling engaged. System will auto-pause to avoid platform bans.
                                     </div>
                                 </div>
                             </section>
@@ -1349,54 +1397,55 @@ export default function App() {
                                             )}
                                         </div>
 
-                                        {/* Node 05 Branch Panel - WIDER & BETTER - POSITIONED LEFT TO AVOID OVERFLOW */}
+                                        {/* Node 05 Branch Panel - WIDER & BETTER - POSITIONED LEFT TO AVOID OVERFLOW - 3 COLUMN LAYOUT */}
                                         {pConfig.mode === 'select' && !paymentUrl && (
-                                            <div className="absolute top-full right-0 pt-6 z-[100] w-[380px]">
+                                            <div className="absolute top-full right-0 pt-6 z-[100] w-[540px]">
                                                 <div className="absolute top-0 right-10 w-px h-6 bg-cyan-500/50" />
                                                 <div className="bg-slate-900/98 backdrop-blur-2xl border border-cyan-500/40 rounded-2xl p-5 shadow-[0_0_50px_rgba(0,0,0,0.8),0_0_20px_rgba(34,211,238,0.1)] animate-in slide-in-from-top-4 duration-500">
-                                                    <div className="flex items-center justify-between mb-5">
+                                                    <div className="flex items-center justify-between mb-4 pb-3 border-b border-white/5">
                                                         <div className="text-[10px] font-black text-cyan-400 uppercase tracking-widest flex items-center gap-2">
                                                             <CreditCard size={12} />
                                                             Select Gateway
                                                         </div>
-                                                        <div className="text-[9px] text-slate-500 font-bold uppercase tracking-tighter bg-white/5 px-2 py-0.5 rounded">Checkout Level 05</div>
+                                                        <div className="flex items-center gap-3">
+                                                            <div className="text-[8px] text-slate-500 font-bold uppercase tracking-tighter bg-white/5 px-2 py-1 rounded">Level 05</div>
+                                                            <button 
+                                                                onClick={() => handlePromptSubmit()}
+                                                                disabled={isSubmittingPrompt || !promptInput}
+                                                                className="px-4 py-1.5 bg-cyan-500 hover:bg-cyan-400 disabled:opacity-30 disabled:cursor-not-allowed rounded-lg text-[9px] font-black uppercase tracking-[0.1em] text-slate-950 transition-all active:scale-[0.98] shadow-lg shadow-cyan-500/20 flex items-center gap-1.5"
+                                                            >
+                                                                {isSubmittingPrompt ? <RefreshCcw size={10} className="animate-spin" /> : (
+                                                                    <>
+                                                                        <ShieldCheck size={11} />
+                                                                        Confirm & Pay
+                                                                    </>
+                                                                )}
+                                                            </button>
+                                                        </div>
                                                     </div>
-                                                    
-                                                    <button 
-                                                        onClick={() => handlePromptSubmit()}
-                                                        disabled={isSubmittingPrompt || !promptInput}
-                                                        className="w-full h-12 bg-cyan-500 hover:bg-cyan-400 disabled:opacity-30 disabled:cursor-not-allowed rounded-xl text-[11px] font-black uppercase tracking-[0.2em] text-slate-950 transition-all active:scale-[0.98] shadow-lg shadow-cyan-500/20 flex items-center justify-center gap-2 mb-6"
-                                                    >
-                                                        {isSubmittingPrompt ? <RefreshCcw size={16} className="animate-spin" /> : (
-                                                            <>
-                                                                <ShieldCheck size={16} />
-                                                                Confirm & Pay Now
-                                                            </>
-                                                        )}
-                                                    </button>
 
-                                                    <div className="grid grid-cols-2 gap-2">
+                                                    <div className="grid grid-cols-3 gap-2">
                                                         {pConfig.options?.map((opt) => (
                                                             <button
                                                                 key={opt.id}
                                                                 onClick={() => setPromptInput(opt.id)}
-                                                                className={`group relative h-12 rounded-xl border-2 transition-all flex items-center px-4 overflow-hidden ${promptInput === opt.id ? 'border-cyan-400 bg-cyan-400/10 shadow-[0_0_15px_rgba(34,211,238,0.2)]' : 'border-white/5 bg-slate-950 hover:border-white/10'}`}
+                                                                className={`group relative h-12 rounded-xl border-2 transition-all flex items-center px-2.5 overflow-hidden ${promptInput === opt.id ? 'border-cyan-400 bg-cyan-400/10 shadow-[0_0_15px_rgba(34,211,238,0.2)]' : 'border-white/5 bg-slate-950 hover:border-white/10'}`}
                                                             >
                                                                 <div className={`absolute left-0 top-0 bottom-0 w-1 ${opt.color || opt.logoColor} opacity-80`} />
                                                                 
-                                                                <div className="flex items-center gap-3 w-full">
-                                                                    <div className={`w-10 h-8 rounded-lg flex items-center justify-center p-1.5 ${opt.logoColor || 'bg-white'} shadow-sm`}>
+                                                                <div className="flex items-center gap-2 w-full">
+                                                                    <div className={`w-8 h-7 rounded-lg flex items-center justify-center p-1 shrink-0 ${opt.logoColor || 'bg-white'} shadow-sm`}>
                                                                         <img src={opt.logo} alt={opt.name} className="w-full h-full object-contain" />
                                                                     </div>
-                                                                    <div className="flex flex-col items-start">
-                                                                        <span className={`text-[9px] font-black tracking-widest ${promptInput === opt.id ? 'text-white' : 'text-slate-400'}`}>
+                                                                    <div className="flex flex-col items-start min-w-0 flex-1">
+                                                                        <span className={`text-[9px] font-black tracking-widest truncate w-full ${promptInput === opt.id ? 'text-white' : 'text-slate-400'}`}>
                                                                             {opt.name}
                                                                         </span>
                                                                         <span className="text-[7px] text-slate-600 font-bold uppercase tracking-tighter">Fast Payment</span>
                                                                     </div>
                                                                     {promptInput === opt.id && (
-                                                                        <div className="ml-auto w-4 h-4 rounded-full bg-cyan-400 flex items-center justify-center">
-                                                                            <Check size={10} className="text-slate-950" />
+                                                                        <div className="ml-auto w-3 h-3 rounded-full bg-cyan-400 flex items-center justify-center shrink-0">
+                                                                            <Check size={8} className="text-slate-950" />
                                                                         </div>
                                                                     )}
                                                                 </div>

@@ -198,6 +198,8 @@ _cached_auth = None
 _cached_auth_time = 0
 _cached_turnstile = None
 _cached_turnstile_time = 0
+_request_history = {} # {path: [timestamps]}
+_seat_selection_history = [] # [timestamps]
 
 WS_URL_TTL = 30        # Re-discover Chrome WS URL every 30s
 AUTH_TTL = 120          # Re-read auth from localStorage every 2 min
@@ -384,6 +386,47 @@ def invalidate_turnstile(ws_url=None):
 
 
 def api_request(method, path, params=None, json_data=None):
+    # Proactive Throttling: Stay under Railway's new protection limits
+    now = time.time()
+    clean_path = path.split('?')[0]
+    
+    # 1. URL Request Rate Limiter: Max 10 requests per minute per URL
+    if clean_path not in _request_history:
+        _request_history[clean_path] = []
+    
+    while True:
+        now = time.time()
+        # Filter requests from the last 60 seconds
+        _request_history[clean_path] = [t for t in _request_history[clean_path] if now - t < 60]
+        if len(_request_history[clean_path]) < 9: # Safety margin: 9 instead of 10
+            break
+        
+        # Calculate sleep time to stay within limits
+        oldest_req = _request_history[clean_path][0]
+        sleep_needed = 60.1 - (now - oldest_req)
+        if sleep_needed > 0:
+            print(f"{Fore.YELLOW}Safety Pause: Approaching request limit for {clean_path}. Waiting {sleep_needed:.1f}s...")
+            time.sleep(sleep_needed)
+    
+    _request_history[clean_path].append(time.time())
+
+    # 2. Seat Selection Limiter: Max 12 selections in 15 minutes
+    if 'reserve-seat' in path:
+        global _seat_selection_history
+        while True:
+            now = time.time()
+            _seat_selection_history = [t for t in _seat_selection_history if now - t < 900] # 15 min window
+            if len(_seat_selection_history) < 11: # Safety margin: 11 instead of 12
+                break
+                
+            oldest_selection = _seat_selection_history[0]
+            sleep_needed = 900.5 - (now - oldest_selection)
+            if sleep_needed > 0:
+                print(f"{Fore.YELLOW}Safety Pause: Approaching seat selection limit. Cooling down for {int(sleep_needed // 60)}m {int(sleep_needed % 60)}s...")
+                time.sleep(sleep_needed)
+        
+        _seat_selection_history.append(time.time())
+
     ws_url = get_ws_url()
     if not ws_url:
         print(f"{Fore.RED}Cannot connect to Chrome. Is it running with --remote-debugging-port=9222?")
@@ -526,19 +569,29 @@ def auto_login_if_needed(ws_url):
         passField.dispatchEvent(new Event('input', {{ bubbles: true }}));
         passField.dispatchEvent(new Event('change', {{ bubbles: true }}));
 
-        // Wait briefly for Turnstile to finish if it is already close to ready.
+        // Wait for Turnstile to finish. If it's stuck, try to reset it once.
         let turnstileReady = false;
-        for (let i = 0; i < 10; i++) {{
+        let resetAttempted = false;
+        for (let i = 0; i < 30; i++) {{ // Up to 15 seconds (30 * 500ms)
             await new Promise(r => setTimeout(r, 500));
             const cft = document.querySelector('input[name="cf-turnstile-response"]');
             if (cft && cft.value && cft.value.length > 10) {{
                 turnstileReady = true;
                 break;
             }}
+            
+            // If after 5 seconds still not ready, try to trigger a reset
+            if (i === 10 && !resetAttempted) {{
+                if (window.turnstile) {{
+                    console.log('Turnstile stuck, attempting reset...');
+                    turnstile.reset();
+                    resetAttempted = true;
+                }}
+            }}
         }}
 
         if (!turnstileReady) {{
-            return JSON.stringify({{ok: false, msg: 'Turnstile token was not ready'}});
+            return JSON.stringify({{ok: false, msg: 'Turnstile token was not ready after 15s'}});
         }}
 
         // Find and click the submit button
@@ -548,7 +601,8 @@ def auto_login_if_needed(ws_url):
             // Fallback: find any button with login text
             const allBtns = document.querySelectorAll('button');
             for (const b of allBtns) {{
-                if (b.textContent.toLowerCase().includes('login') || b.textContent.toLowerCase().includes('sign in') || b.textContent.toLowerCase().includes('log in')) {{
+                const txt = b.textContent.toLowerCase();
+                if (txt.includes('login') || txt.includes('sign in') || txt.includes('log in') || txt.includes('sign-in')) {{
                     submitBtn = b;
                     break;
                 }}
@@ -557,7 +611,7 @@ def auto_login_if_needed(ws_url):
 
         if (submitBtn) {{
             submitBtn.click();
-            return JSON.stringify({{ok: true, msg: 'Login form submitted'}});
+            return JSON.stringify({{ok: true, msg: 'Login form submitted via button'}});
         }} else {{
             // Try submitting the form directly
             const form = document.querySelector('form');
@@ -1198,15 +1252,26 @@ def fresh_login():
     # Step 0.5: Force clear any existing session in browser to reflect new credentials
     print(f"{Fore.YELLOW}Ensuring clean session for fresh login...")
     exec_js(ws_url, "localStorage.clear(); sessionStorage.clear();")
-    # Try to find and click logout if visible
+    # Try to find and click logout if visible (handles common Railway/Angular selectors)
     exec_js(ws_url, '''(() => {
-        const logoutBtn = Array.from(document.querySelectorAll('a, button')).find(el => {
-            const t = el.textContent.toLowerCase();
-            return t.includes('logout') || t.includes('sign out');
-        });
-        if (logoutBtn) logoutBtn.click();
+        // Try clicking user profile first if it exists (often needed to show logout)
+        const profile = document.querySelector('.user-profile, .profile-name, .nav-item.dropdown');
+        if (profile) profile.click();
+
+        setTimeout(() => {
+            const logoutBtn = Array.from(document.querySelectorAll('a, button, span, li')).find(el => {
+                const t = el.textContent.toLowerCase();
+                const id = el.id ? el.id.toLowerCase() : '';
+                return t.includes('logout') || t.includes('sign out') || id.includes('logout');
+            });
+            if (logoutBtn) logoutBtn.click();
+        }, 500);
     })()''')
-    time.sleep(1) # Wait for potential logout redirect
+    time.sleep(1.5) # Wait for logout process
+    
+    # Final cleanup: if still not on login page, force home
+    exec_js(ws_url, "if (!location.href.includes('/login')) location.href = 'https://eticket.railway.gov.bd/';")
+    time.sleep(1)
 
     current = exec_js(ws_url, "location.href")
     print(f"{Fore.CYAN}Current page: {current}")
@@ -1275,7 +1340,7 @@ def fresh_login():
     for attempt in range(24):  # Up to 12s.
         try:
             token_status = exec_js(ws_url, '''(() => {
-                const iframe = document.querySelector('iframe[src*="turnstile"]');
+                const iframe = document.querySelector('iframe[src*="turnstile"], iframe[src*="cloudflare.com/cdn-cgi/challenge-platform"]');
                 const inp = document.querySelector('input[name="cf-turnstile-response"]');
                 const hasToken = inp && inp.value && inp.value.length > 10;
                 return JSON.stringify({
@@ -1295,6 +1360,12 @@ def fresh_login():
                     detail = f"iframe={'✓' if status.get('iframeFound') else '✗'}, input={'✓' if status.get('inputFound') else '✗'}"
                     if attempt % 5 == 0:
                         print(f"{Fore.YELLOW}  Page verification pending... ({detail}) [{attempt+1}/24]")
+                    
+                    # If no iframe after 5 seconds (attempt 10), try a quick refresh
+                    if attempt == 10 and not status.get('iframeFound'):
+                        print(f"{Fore.YELLOW}  Challenge widget missing. Refreshing to retry...")
+                        exec_js(ws_url, "location.reload()")
+                        time.sleep(2) # Give it a moment to start loading
         except:
             pass
         time.sleep(0.5)
